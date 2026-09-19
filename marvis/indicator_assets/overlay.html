@@ -1,0 +1,473 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; height: 100%;
+    background: #12151b; color: #cfd8e3;
+    font-family: Segoe UI, sans-serif;
+  }
+  body { display: flex; flex-direction: column; }
+  #bar {
+    display: flex; gap: clamp(8px, 0.8vw, 16px); padding: clamp(8px, 0.8vw, 16px);
+    border-bottom: 1px solid #232834; flex: 0 0 auto;
+  }
+  button {
+    flex: 1; background: #1c212b; color: #cfd8e3; border: 1px solid #2c3240;
+    border-radius: 4px; padding: clamp(6px, 0.6vw, 12px) clamp(8px, 0.8vw, 16px);
+    font-size: clamp(12px, 1vw, 16px); cursor: pointer;
+  }
+  button:hover { background: #232a37; }
+  #main { flex: 1; position: relative; display: flex; flex-direction: column; overflow: hidden; }
+  #indicator {
+    flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: clamp(8px, 1vh, 18px); padding: clamp(16px, 3vh, 44px) 0 clamp(12px, 2vh, 32px);
+    border-bottom: 1px solid #232834;
+  }
+  canvas {
+    display: block; pointer-events: none;
+  }
+  #status {
+    font-size: clamp(11px, 1vw, 16px); letter-spacing: 0.08em; color: #6b7686; text-transform: uppercase;
+  }
+  #chat {
+    flex: 1; overflow-y: auto; padding: clamp(10px, 1.2vw, 24px);
+    display: flex; flex-direction: column; gap: clamp(8px, 0.8vw, 14px);
+  }
+  #inputRow {
+    flex: 0 0 auto; padding: clamp(8px, 1vw, 18px); border-top: 1px solid #232834;
+  }
+  #textInput {
+    width: 100%; box-sizing: border-box; background: #1c212b; color: #cfd8e3;
+    border: 1px solid #2c3240; border-radius: 4px;
+    padding: clamp(7px, 0.7vw, 14px) clamp(9px, 0.9vw, 16px); font-size: clamp(13px, 1.1vw, 17px);
+  }
+  #textInput:disabled { opacity: 0.45; }
+  #textInput::placeholder { color: #6b7686; }
+  .msg {
+    max-width: 82%; padding: clamp(6px, 0.6vw, 12px) clamp(10px, 1vw, 18px); border-radius: 10px;
+    font-size: clamp(13px, 1.1vw, 17px); line-height: 1.4; word-wrap: break-word; white-space: pre-wrap;
+  }
+  .msg.user {
+    align-self: flex-end; text-align: right;
+    background: rgba(124, 147, 255, 0.12); color: #7c93ff;
+    border: 1px solid rgba(124, 147, 255, 0.35); border-bottom-right-radius: 2px;
+  }
+  .msg.marvis {
+    align-self: flex-start;
+    background: rgba(77, 163, 255, 0.10); color: #4da3ff;
+    border: 1px solid rgba(77, 163, 255, 0.3); border-bottom-left-radius: 2px;
+  }
+  .sessionItem {
+    padding: 8px 10px; border-radius: 8px; cursor: pointer;
+    background: #1c212b; border: 1px solid #2c3240;
+  }
+  .sessionItem:hover { background: #232a37; }
+  .sessionItem.current { border-color: #4da3ff; }
+  .sessionTime { font-size: 11px; color: #6b7686; margin-bottom: 3px; }
+  .sessionPreview {
+    font-size: 13px; color: #cfd8e3; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .sessionEmpty { font-size: 12px; color: #6b7686; text-align: center; padding: 20px 0; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="modeBtn">Mode: ...</button>
+  <button id="historyBtn">History</button>
+  <button id="restartBtn">Restart</button>
+</div>
+<div id="main">
+<div id="indicator">
+  <canvas id="c"></canvas>
+  <div id="status">Idle</div>
+</div>
+<div id="chat"></div>
+<div id="inputRow">
+  <input id="textInput" type="text" placeholder="Switch to Text mode to type..." disabled>
+</div>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+// All drawing below is expressed in this fixed logical coordinate space; the
+// canvas's actual backing resolution and CSS display size are scaled to fit
+// the window at render time, so the indicator stays crisp at any window size.
+const REF = 440;
+const W = REF, H = REF;
+const CX = W / 2, CY = H / 2 + 6;
+
+function sizeCanvas() {
+  const dispSize = Math.round(Math.max(140, Math.min(
+    window.innerHeight * 0.28, window.innerWidth * 0.55, 480,
+  )));
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = dispSize + 'px';
+  canvas.style.height = dispSize + 'px';
+  canvas.width = Math.round(dispSize * dpr);
+  canvas.height = Math.round(dispSize * dpr);
+  const scale = (dispSize / REF) * dpr;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+}
+window.addEventListener('resize', sizeCanvas);
+sizeCanvas();
+
+const ACCENT = '#4da3ff';
+const BG = '#12151b';
+const PUPIL = '#0c1526';   // one pupil colour, used in every mode
+const N_BANDS = 5;
+
+// The avatar is the actual app icon (indicator_assets/icon_source.png) with
+// eyes/mouth/antenna glow drawn on top, at feature positions measured from it.
+const icon = new Image();
+icon.src = 'icon_source.png';
+const S = 280;                       // on-screen icon size
+const EYES = [[-38, 2], [39, 1]];    // eye centers (measured from the icon)
+const EYE_R = 19;                    // outer radius of the blue donut eye
+const HOLE_R = 9;                    // the transparent centre of the donut
+// The nose dots in icon_source.png sit at y~27-39 (nudged up from their original
+// y~35-46 to make room for the mouth below); the visor's dark area -- where the
+// mouth is drawn -- ends around y=78, past which is the solid chin/jaw. MOUTH_CY
+// is the midpoint of that y~45-71 gap, and the mry cap below keeps the mouth's
+// symmetric growth from the centre inside it, so it can never reach either one.
+const MOUTH_X = 0.5, MOUTH_CY = 58;
+const ANT = [0, -110], ANT_R = 11;   // antenna bulb
+
+let mode = 'hidden'; // 'hidden' (idle) | 'thinking' | 'speaking'
+let prevMode = 'hidden';
+let bulbUntil = 0;        // wall-clock ms until which the "idea" bulb shows
+let nextBlink = 1500, blinkT = -1;
+const targetLevels = new Array(N_BANDS).fill(0);
+const smoothedLevels = new Array(N_BANDS).fill(0);
+const startTime = performance.now();
+
+const chatEl = document.getElementById('chat');
+const statusEl = document.getElementById('status');
+const textInput = document.getElementById('textInput');
+let currentMarvisMsgEl = null;
+let currentMarvisRaw = '';
+
+function scrollChatToBottom() {
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Renders **bold** markers as real bold instead of showing the literal asterisks.
+function renderMarkup(raw) {
+  return escapeHtml(raw).replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+}
+
+function updateStatus() {
+  statusEl.textContent = mode === 'thinking' ? 'Thinking…'
+    : mode === 'speaking' ? 'Speaking…'
+    : 'Idle';
+}
+
+window.marvisOverlay = {
+  show() { if (mode !== 'speaking') mode = 'thinking'; updateStatus(); },
+  hide() { if (mode === 'thinking') mode = 'hidden'; updateStatus(); },
+  startSpeaking() {
+    mode = 'speaking';
+    targetLevels.fill(0);
+    smoothedLevels.fill(0);
+    updateStatus();
+  },
+  // Finishing one sentence doesn't mean the turn is over -- there may be more text
+  // still streaming in, or a tool call in progress before the next sentence -- so
+  // this drops back to "thinking" (visibly still working) rather than idle. Only
+  // hide() (called once the whole turn is truly done) reaches idle.
+  stopSpeaking() { if (mode === 'speaking') mode = 'thinking'; updateStatus(); },
+  setLevels(levels) {
+    for (let i = 0; i < N_BANDS && i < levels.length; i++) {
+      targetLevels[i] = Math.max(0, Math.min(1, levels[i]));
+    }
+  },
+  setMode(label) {
+    const spoken = label
+      .split('_')
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+    document.getElementById('modeBtn').textContent = `Mode: ${spoken}`;
+    const isText = label === 'text';
+    textInput.disabled = !isText;
+    textInput.placeholder = isText ? 'Type a message...' : 'Switch to Text mode to type...';
+  },
+  addUserMessage(text) {
+    const el = document.createElement('div');
+    el.className = 'msg user';
+    el.textContent = text;
+    chatEl.appendChild(el);
+    currentMarvisMsgEl = null;
+    scrollChatToBottom();
+  },
+  startMarvisMessage() {
+    const el = document.createElement('div');
+    el.className = 'msg marvis';
+    chatEl.appendChild(el);
+    currentMarvisMsgEl = el;
+    currentMarvisRaw = '';
+    scrollChatToBottom();
+  },
+  appendMarvisMessage(text) {
+    if (!currentMarvisMsgEl) return;
+    currentMarvisRaw += text;
+    currentMarvisMsgEl.innerHTML = renderMarkup(currentMarvisRaw);
+    scrollChatToBottom();
+  },
+};
+
+document.getElementById('restartBtn').addEventListener('click', () => {
+  window.pywebview.api.restart();
+});
+document.getElementById('modeBtn').addEventListener('click', () => {
+  window.pywebview.api.toggle_mode();
+});
+function renderTranscript(messages) {
+  chatEl.innerHTML = '';
+  currentMarvisMsgEl = null;
+  for (const m of messages) {
+    const el = document.createElement('div');
+    const isUser = m.role === 'user';
+    el.className = 'msg ' + (isUser ? 'user' : 'marvis');
+    if (isUser) {
+      el.textContent = m.text;
+    } else {
+      el.innerHTML = renderMarkup(m.text);
+    }
+    chatEl.appendChild(el);
+  }
+  scrollChatToBottom();
+}
+
+function loadSession(sessionId) {
+  window.pywebview.api.switch_session(sessionId)
+    .then(() => window.pywebview.api.get_session_transcript(sessionId))
+    .then(renderTranscript);
+}
+
+document.getElementById('historyBtn').addEventListener('click', () => {
+  window.pywebview.api.get_sessions().then((sessions) => {
+    chatEl.innerHTML = '';
+    currentMarvisMsgEl = null;
+    if (sessions.length === 0) {
+      const el = document.createElement('div');
+      el.className = 'sessionEmpty';
+      el.textContent = 'No past conversations yet.';
+      chatEl.appendChild(el);
+      return;
+    }
+    for (const s of sessions) {
+      const el = document.createElement('div');
+      el.className = 'sessionItem' + (s.current ? ' current' : '');
+      const timeEl = document.createElement('div');
+      timeEl.className = 'sessionTime';
+      timeEl.textContent = s.label + (s.current ? ' (current)' : '');
+      const previewEl = document.createElement('div');
+      previewEl.className = 'sessionPreview';
+      previewEl.textContent = s.preview;
+      el.appendChild(timeEl);
+      el.appendChild(previewEl);
+      el.addEventListener('click', () => loadSession(s.session_id));
+      chatEl.appendChild(el);
+    }
+  });
+});
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !textInput.disabled && textInput.value.trim()) {
+    window.pywebview.api.send_text(textInput.value.trim());
+    textInput.value = '';
+  }
+});
+
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+
+// Blink timer - the eye shuts and reopens every couple of seconds.
+function eyeOpenFactor(now) {
+  if (now > nextBlink && blinkT < 0) { blinkT = now; }
+  if (blinkT >= 0) {
+    const d = now - blinkT;
+    if (d > 170) { blinkT = -1; nextBlink = now + 2200 + Math.random() * 2600; return 1; }
+    return Math.abs(d - 85) / 85;
+  }
+  return 1;
+}
+
+// Lit lightbulb: the "idea!" that pops in for a moment right after thinking ends.
+function drawBulb(x, y, s, a) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.globalAlpha = a;
+
+  const gg = ctx.createRadialGradient(0, -2, 2, 0, -2, 34);
+  gg.addColorStop(0, 'rgba(255,224,130,0.9)');
+  gg.addColorStop(1, 'rgba(255,224,130,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath(); ctx.arc(0, -2, 34, 0, Math.PI * 2); ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,214,90,0.95)';
+  ctx.lineWidth = 2.4; ctx.lineCap = 'round';
+  for (let i = 0; i < 8; i++) {
+    const ang = (i / 8) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(ang) * 18, Math.sin(ang) * 18 - 2);
+    ctx.lineTo(Math.cos(ang) * 24, Math.sin(ang) * 24 - 2);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = '#fff4c2';
+  ctx.strokeStyle = '#e0b23a'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, -2, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+  ctx.strokeStyle = '#e6a11c'; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-4, 3); ctx.lineTo(-2, -4); ctx.lineTo(2, -4); ctx.lineTo(4, 3);
+  ctx.stroke();
+
+  ctx.fillStyle = '#9aa3b0';
+  rr(-6, 8, 12, 9, 2); ctx.fill();
+  ctx.strokeStyle = '#6b7280'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-6, 11); ctx.lineTo(6, 11); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-6, 14); ctx.lineTo(6, 14); ctx.stroke();
+
+  ctx.restore();
+}
+
+// The avatar: the app icon plus a soft glow, blinking eyes, an antenna glow,
+// and (per mode) a thought cloud or an added mouth driven by real volume levels.
+function drawMonkey(t, opts) {
+  const { bob, breathe, eyeOpen, mouthOpen, glow, arm, bulb } = opts;
+  ctx.save();
+  ctx.translate(CX, CY + bob);
+  ctx.scale(breathe, breathe);
+
+  const g = ctx.createRadialGradient(0, 0, 20, 0, 0, 175);
+  g.addColorStop(0, `rgba(77,163,255,${0.09 + glow * 0.18})`);
+  g.addColorStop(1, 'rgba(77,163,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(0, 0, 175, 0, Math.PI * 2); ctx.fill();
+
+  if (icon.complete && icon.naturalWidth) {
+    ctx.drawImage(icon, -S / 2, -S / 2, S, S);
+  }
+
+  for (const e of EYES) {
+    const eg = ctx.createRadialGradient(e[0], e[1], 2, e[0], e[1], EYE_R * 1.25);
+    eg.addColorStop(0, `rgba(150,205,255,${0.10 + 0.22 * glow})`);
+    eg.addColorStop(1, 'rgba(150,205,255,0)');
+    ctx.fillStyle = eg;
+    ctx.beginPath(); ctx.arc(e[0], e[1], EYE_R * 1.25, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // eyes - always show a pupil so it reads as alive; it glances up-left while thinking
+  {
+    const gx = arm > 0.01 ? -3 : 0;
+    const gy = arm > 0.01 ? -3.5 : 0;
+    for (const e of EYES) {
+      ctx.fillStyle = ACCENT;
+      ctx.beginPath(); ctx.arc(e[0], e[1], HOLE_R + 2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = PUPIL;
+      ctx.beginPath(); ctx.arc(e[0] + gx, e[1] + gy, HOLE_R * 0.62, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // blink - clipped to the eye so it reads as the eye itself closing
+  if (eyeOpen < 0.985) {
+    const coverH = (EYE_R * 2 + 2) * (1 - eyeOpen);
+    for (const e of EYES) {
+      ctx.save();
+      ctx.beginPath(); ctx.arc(e[0], e[1], EYE_R + 0.5, 0, Math.PI * 2); ctx.clip();
+      ctx.fillStyle = BG;
+      ctx.fillRect(e[0] - EYE_R - 1, e[1] - EYE_R - 1, EYE_R * 2 + 2, coverH);
+      ctx.restore();
+    }
+  }
+
+  // mouth (added - the icon has none), opens with real speech volume, growing from
+  // its centre outward in every direction (both mrx and mry scale up from the same
+  // fixed point) rather than hinging open from a fixed top lip. mry is capped so it
+  // still can't reach the nose or chin at MOUTH_CY +/- 13.
+  if (mouthOpen > 0.05) {
+    const mrx = 10 + mouthOpen * 13;
+    const mry = 2 + mouthOpen * 11;
+    ctx.fillStyle = '#0c1526';
+    ctx.beginPath(); ctx.ellipse(MOUTH_X, MOUTH_CY, mrx, mry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(130,195,255,${0.5 + mouthOpen * 0.4})`; ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+
+  ctx.save();
+  ctx.fillStyle = ACCENT; ctx.shadowColor = ACCENT; ctx.shadowBlur = 9 + glow * 16;
+  ctx.beginPath(); ctx.arc(ANT[0], ANT[1], ANT_R * 0.85, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  // thinking - a thought cloud rises to the upper-left
+  if (arm > 0.01) {
+    const cb = Math.sin(t / 520) * 2;
+    const trail = [[-80, -74, 4], [-100, -95, 6]];
+    const cloud = [[-126, -115, 13.5], [-106, -125, 9.5], [-144, -123, 9.5], [-120, -133, 9.5]];
+    const all = [];
+    trail.forEach((p, i) => all.push([p[0], p[1] + Math.sin(t / 460 + i) * 1.5, p[2]]));
+    cloud.forEach((p) => all.push([p[0], p[1] + cb, p[2]]));
+    ctx.lineWidth = 3; ctx.lineJoin = 'round';
+    ctx.strokeStyle = `rgba(77,163,255,${0.9 * arm})`;
+    for (const c of all) { ctx.beginPath(); ctx.arc(c[0], c[1], c[2], 0, Math.PI * 2); ctx.stroke(); }
+    ctx.fillStyle = `rgba(232,244,255,${0.95 * arm})`;
+    for (const c of all) { ctx.beginPath(); ctx.arc(c[0], c[1], c[2], 0, Math.PI * 2); ctx.fill(); }
+  }
+
+  // idea! - a lit lightbulb pops in for a moment right after thinking ends
+  if (bulb > 0.01) {
+    drawBulb(-120, -116, 1.7 * (0.85 + 0.15 * bulb), bulb);
+  }
+
+  ctx.restore();
+}
+
+function frame() {
+  const now = performance.now();
+  const t = now - startTime;
+
+  // leaving thinking triggers the lightbulb for one second
+  if (prevMode === 'thinking' && mode !== 'thinking') bulbUntil = now + 1000;
+  prevMode = mode;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const opts = { bob: 0, breathe: 1, eyeOpen: eyeOpenFactor(now), mouthOpen: 0, glow: 0, arm: 0, bulb: 0 };
+  if (bulbUntil > now) {
+    const life = 1 - (bulbUntil - now) / 1000;        // 0 -> 1 across the second
+    opts.bulb = Math.min(1, life / 0.15, (1 - life) / 0.25);  // quick pop in, fade out
+  }
+
+  if (mode === 'thinking') {
+    opts.bob = Math.sin(t / 1100) * 2;
+    opts.arm = 1;
+    opts.glow = 0.28;
+  } else if (mode === 'speaking') {
+    for (let i = 0; i < N_BANDS; i++) {
+      smoothedLevels[i] += (targetLevels[i] - smoothedLevels[i]) * 0.3;
+    }
+    const overall = smoothedLevels.reduce((a, b) => a + b, 0) / N_BANDS;
+    opts.mouthOpen = overall;
+    opts.bob = -overall * 3 + Math.sin(t / 900) * 2;
+    opts.glow = 0.25 + overall * 0.4;
+    opts.breathe = 1 + overall * 0.02;
+  } else {
+    opts.bob = Math.sin(t / 1400) * 4;
+    opts.breathe = 1 + Math.sin(t / 1400) * 0.012;
+    opts.glow = 0.2 + 0.15 * (0.5 + 0.5 * Math.sin(t / 1800));
+  }
+
+  drawMonkey(t, opts);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

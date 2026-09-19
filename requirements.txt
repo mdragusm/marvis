@@ -1,0 +1,11 @@
+faster-whisper>=1.0.3
+openwakeword>=0.6.0
+sounddevice>=0.4.7
+numpy>=1.26
+keyboard>=0.13.5
+python-dotenv>=1.0.1
+psutil>=6.0.0
+edge-tts>=6.1.0
+miniaudio>=1.61
+langid>=1.1.6
+pywebview>=6.0

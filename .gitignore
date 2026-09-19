@@ -1,0 +1,10 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+voices/
+*.log
+state/
+.pytest_cache/
+.claude/settings.local.json
+Marvis.lnk
