@@ -13,6 +13,33 @@
     display: flex; gap: clamp(8px, 0.8vw, 16px); padding: clamp(8px, 0.8vw, 16px);
     border-bottom: 1px solid #232834; flex: 0 0 auto;
   }
+  #tabStrip {
+    display: flex; align-items: center; gap: 4px; padding: 6px 6px 0;
+    overflow-x: auto; flex: 0 0 auto; scrollbar-width: thin;
+    border-bottom: 1px solid #232834;
+  }
+  .tab {
+    display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-width: 70px; max-width: 320px;
+    background: #1c212b; border: 1px solid #2c3240; border-bottom: none;
+    border-radius: 6px 6px 0 0; padding: 6px 6px 6px 10px; cursor: pointer;
+    font-size: 12px; color: #8b95a5;
+  }
+  .tab:hover { background: #232a37; }
+  .tab.active { background: #232a37; color: #cfd8e3; border-color: #4da3ff; }
+  .tabLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tabClose {
+    flex: 0 0 auto; width: 16px; height: 16px; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    color: #6b7686; font-size: 13px; line-height: 1;
+  }
+  .tabClose:hover { background: #2c3240; color: #cfd8e3; }
+  .newTabBtn {
+    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    background: #1c212b; border: 1px solid #2c3240; color: #8b95a5;
+    cursor: pointer; font-size: 15px; line-height: 1;
+  }
+  .newTabBtn:hover { background: #232a37; color: #cfd8e3; }
   button {
     flex: 1; background: #1c212b; color: #cfd8e3; border: 1px solid #2c3240;
     border-radius: 4px; padding: clamp(6px, 0.6vw, 12px) clamp(8px, 0.8vw, 16px);
@@ -23,7 +50,6 @@
   #indicator {
     flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: clamp(8px, 1vh, 18px); padding: clamp(16px, 3vh, 44px) 0 clamp(12px, 2vh, 32px);
-    border-bottom: 1px solid #232834;
   }
   canvas {
     display: block; pointer-events: none;
@@ -31,6 +57,19 @@
   #status {
     font-size: clamp(11px, 1vw, 16px); letter-spacing: 0.08em; color: #6b7686; text-transform: uppercase;
   }
+  #usageRow {
+    display: none; align-items: center; gap: 8px;
+    padding: 6px clamp(8px, 0.8vw, 16px); border-bottom: 1px solid #232834; flex: 0 0 auto;
+  }
+  #usageTrack { flex: 1; height: 6px; background: #1c212b; border-radius: 3px; overflow: hidden; }
+  #usageFill {
+    height: 100%; width: 0%; background: #4da3ff; border-radius: 3px;
+    transition: width 0.4s ease, background 0.4s ease;
+  }
+  #usageFill.warn { background: #e0b23a; }
+  #usageFill.critical { background: #e05a4a; animation: usagePulse 1.2s ease-in-out infinite; }
+  @keyframes usagePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  #usageLabel { font-size: 11px; color: #6b7686; min-width: 72px; text-align: right; }
   #chat {
     flex: 1; overflow-y: auto; padding: clamp(10px, 1.2vw, 24px);
     display: flex; flex-direction: column; gap: clamp(8px, 0.8vw, 14px);
@@ -79,11 +118,16 @@
   <button id="historyBtn">History</button>
   <button id="restartBtn">Restart</button>
 </div>
+<div id="usageRow">
+  <div id="usageTrack"><div id="usageFill"></div></div>
+  <span id="usageLabel"></span>
+</div>
 <div id="main">
 <div id="indicator">
   <canvas id="c"></canvas>
   <div id="status">Idle</div>
 </div>
+<div id="tabStrip"></div>
 <div id="chat"></div>
 <div id="inputRow">
   <input id="textInput" type="text" placeholder="Switch to Text mode to type..." disabled>
@@ -133,7 +177,7 @@ const HOLE_R = 9;                    // the transparent centre of the donut
 // is the midpoint of that y~45-71 gap, and the mry cap below keeps the mouth's
 // symmetric growth from the centre inside it, so it can never reach either one.
 const MOUTH_X = 0.5, MOUTH_CY = 58;
-const ANT = [0, -110], ANT_R = 11;   // antenna bulb
+const ANT = [0.52, -109.3], ANT_R = 11;   // antenna bulb (nudged to match the icon art's actual knob centre)
 
 let mode = 'hidden'; // 'hidden' (idle) | 'thinking' | 'speaking'
 let prevMode = 'hidden';
@@ -146,6 +190,9 @@ const startTime = performance.now();
 const chatEl = document.getElementById('chat');
 const statusEl = document.getElementById('status');
 const textInput = document.getElementById('textInput');
+const usageRow = document.getElementById('usageRow');
+const usageFill = document.getElementById('usageFill');
+const usageLabel = document.getElementById('usageLabel');
 let currentMarvisMsgEl = null;
 let currentMarvisRaw = '';
 
@@ -165,6 +212,7 @@ function renderMarkup(raw) {
 function updateStatus() {
   statusEl.textContent = mode === 'thinking' ? 'Thinking…'
     : mode === 'speaking' ? 'Speaking…'
+    : mode === 'listening' ? 'Listening…'
     : 'Idle';
 }
 
@@ -182,6 +230,18 @@ window.marvisOverlay = {
   // this drops back to "thinking" (visibly still working) rather than idle. Only
   // hide() (called once the whole turn is truly done) reaches idle.
   stopSpeaking() { if (mode === 'speaking') mode = 'thinking'; updateStatus(); },
+  // Confirms Marvis is actively recording -- wake-word mode's window between the trigger
+  // phrase landing and the end of recording, or push-to-talk's window while the key is held.
+  startListening() { mode = 'listening'; updateStatus(); },
+  stopListening() { if (mode === 'listening') mode = 'hidden'; updateStatus(); },
+  setUsage(utilization, windowLabel) {
+    const pct = Math.round(utilization * 100);
+    usageRow.style.display = 'flex';
+    usageFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+    usageFill.classList.toggle('warn', utilization >= 0.8 && utilization < 0.95);
+    usageFill.classList.toggle('critical', utilization >= 0.95);
+    usageLabel.textContent = `${pct}% (${windowLabel})`;
+  },
   setLevels(levels) {
     for (let i = 0; i < N_BANDS && i < levels.length; i++) {
       targetLevels[i] = Math.max(0, Math.min(1, levels[i]));
@@ -219,6 +279,13 @@ window.marvisOverlay = {
     currentMarvisMsgEl.innerHTML = renderMarkup(currentMarvisRaw);
     scrollChatToBottom();
   },
+  // Pushed once the background title-generation call (see assistant.py) finishes for a
+  // tab -- patches that one tab's label in place rather than re-rendering the whole
+  // strip, so it doesn't disturb the current scroll/active state.
+  setTabLabel(sessionId, label) {
+    const tabEl = tabStripEl.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
+    if (tabEl) tabEl.querySelector('.tabLabel').textContent = label;
+  },
 };
 
 document.getElementById('restartBtn').addEventListener('click', () => {
@@ -227,6 +294,53 @@ document.getElementById('restartBtn').addEventListener('click', () => {
 document.getElementById('modeBtn').addEventListener('click', () => {
   window.pywebview.api.toggle_mode();
 });
+const tabStripEl = document.getElementById('tabStrip');
+
+function renderTabs(tabs) {
+  tabStripEl.innerHTML = '';
+  for (const t of tabs) {
+    const el = document.createElement('div');
+    el.className = 'tab' + (t.current ? ' active' : '');
+    el.dataset.sessionId = t.session_id;
+    const labelEl = document.createElement('div');
+    labelEl.className = 'tabLabel';
+    labelEl.textContent = t.label;
+    const closeEl = document.createElement('div');
+    closeEl.className = 'tabClose';
+    closeEl.textContent = '×';
+    closeEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.pywebview.api.close_tab(t.session_id).then(applyTabState);
+    });
+    el.appendChild(labelEl);
+    el.appendChild(closeEl);
+    el.addEventListener('click', () => {
+      if (t.current) return;
+      window.pywebview.api.select_tab(t.session_id).then(applyTabState);
+    });
+    tabStripEl.appendChild(el);
+  }
+  const newTabEl = document.createElement('div');
+  newTabEl.className = 'newTabBtn';
+  newTabEl.textContent = '+';
+  newTabEl.addEventListener('click', () => {
+    window.pywebview.api.new_tab().then(applyTabState);
+  });
+  tabStripEl.appendChild(newTabEl);
+}
+
+function applyTabState({ tabs, transcript }) {
+  renderTabs(tabs);
+  renderTranscript(transcript);
+}
+
+// Unlike the click-triggered api calls elsewhere in this file, this one fires on script
+// load itself, before pywebview has necessarily injected window.pywebview.api -- wait for
+// its ready event instead of calling straight through.
+window.addEventListener('pywebviewready', () => {
+  window.pywebview.api.init_tabs().then(applyTabState);
+});
+
 function renderTranscript(messages) {
   chatEl.innerHTML = '';
   currentMarvisMsgEl = null;
@@ -244,10 +358,8 @@ function renderTranscript(messages) {
   scrollChatToBottom();
 }
 
-function loadSession(sessionId) {
-  window.pywebview.api.switch_session(sessionId)
-    .then(() => window.pywebview.api.get_session_transcript(sessionId))
-    .then(renderTranscript);
+function loadHistoryItem(sessionId) {
+  window.pywebview.api.select_history(sessionId).then(applyTabState);
 }
 
 document.getElementById('historyBtn').addEventListener('click', () => {
@@ -272,7 +384,7 @@ document.getElementById('historyBtn').addEventListener('click', () => {
       previewEl.textContent = s.preview;
       el.appendChild(timeEl);
       el.appendChild(previewEl);
-      el.addEventListener('click', () => loadSession(s.session_id));
+      el.addEventListener('click', () => loadHistoryItem(s.session_id));
       chatEl.appendChild(el);
     }
   });
@@ -341,7 +453,7 @@ function drawBulb(x, y, s, a) {
 // The avatar: the app icon plus a soft glow, blinking eyes, an antenna glow,
 // and (per mode) a thought cloud or an added mouth driven by real volume levels.
 function drawMonkey(t, opts) {
-  const { bob, breathe, eyeOpen, mouthOpen, glow, arm, bulb } = opts;
+  const { bob, breathe, eyeOpen, mouthOpen, glow, arm, bulb, listening } = opts;
   ctx.save();
   ctx.translate(CX, CY + bob);
   ctx.scale(breathe, breathe);
@@ -406,6 +518,20 @@ function drawMonkey(t, opts) {
   ctx.beginPath(); ctx.arc(ANT[0], ANT[1], ANT_R * 0.85, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 
+  // listening - a small red light flashes on the antenna tip while actively recording,
+  // overlaid on the existing antenna bulb. Deliberately doesn't touch the icon's own
+  // geometry (no rotation, no baked-in measurements) after the head-tilt/ear-perk
+  // approach (see CHANGELOG) turned out too fragile across several rounds of fixes.
+  if (listening > 0.01) {
+    ctx.save();
+    ctx.globalAlpha = listening;
+    ctx.fillStyle = '#ff3b30';
+    ctx.shadowColor = '#ff3b30';
+    ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.arc(ANT[0], ANT[1], ANT_R * 0.54, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
   // thinking - a thought cloud rises to the upper-left
   if (arm > 0.01) {
     const cb = Math.sin(t / 520) * 2;
@@ -439,7 +565,7 @@ function frame() {
 
   ctx.clearRect(0, 0, W, H);
 
-  const opts = { bob: 0, breathe: 1, eyeOpen: eyeOpenFactor(now), mouthOpen: 0, glow: 0, arm: 0, bulb: 0 };
+  const opts = { bob: 0, breathe: 1, eyeOpen: eyeOpenFactor(now), mouthOpen: 0, glow: 0, arm: 0, bulb: 0, listening: 0 };
   if (bulbUntil > now) {
     const life = 1 - (bulbUntil - now) / 1000;        // 0 -> 1 across the second
     opts.bulb = Math.min(1, life / 0.15, (1 - life) / 0.25);  // quick pop in, fade out
@@ -458,6 +584,11 @@ function frame() {
     opts.bob = -overall * 3 + Math.sin(t / 900) * 2;
     opts.glow = 0.25 + overall * 0.4;
     opts.breathe = 1 + overall * 0.02;
+  } else if (mode === 'listening') {
+    opts.bob = Math.sin(t / 1400) * 4;
+    opts.breathe = 1 + Math.sin(t / 1400) * 0.012;
+    opts.glow = 0.2 + 0.15 * (0.5 + 0.5 * Math.sin(t / 1800));
+    opts.listening = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t / 260));  // ~2Hz flash
   } else {
     opts.bob = Math.sin(t / 1400) * 4;
     opts.breathe = 1 + Math.sin(t / 1400) * 0.012;

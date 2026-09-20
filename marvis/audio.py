@@ -31,17 +31,20 @@ def record_while_key_held() -> np.ndarray:
 
 
 def record_until_silence(
-    max_seconds: float = 10.0,
+    max_seconds: float = 20.0,
     silence_threshold: float = 0.02,
-    silence_duration: float = 1.0,
+    silence_duration: float = 2.0,
+    speech_start_timeout: float = 3.0,
 ) -> np.ndarray:
     chunk_duration = 0.05
     chunks_per_second = int(1 / chunk_duration)
     max_chunks = int(max_seconds * chunks_per_second)
     silence_chunks_needed = int(silence_duration * chunks_per_second)
+    speech_start_chunks_allowed = int(speech_start_timeout * chunks_per_second)
 
     frames: list[np.ndarray] = []
     silent_chunks = 0
+    speech_started = False
 
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32") as stream:
         for _ in range(max_chunks):
@@ -49,9 +52,16 @@ def record_until_silence(
             frames.append(chunk.copy())
             if np.abs(chunk).mean() < silence_threshold:
                 silent_chunks += 1
-                if silent_chunks >= silence_chunks_needed:
+                # Before real speech starts, a longer timeout applies -- there's usually a
+                # beat between the wake word registering and the user actually starting to
+                # talk (composing their thought, recovering from having to repeat the wake
+                # word), and the tighter post-speech silence_duration would otherwise end
+                # the recording during that gap, before any of the real command is captured.
+                needed = silence_chunks_needed if speech_started else speech_start_chunks_allowed
+                if silent_chunks >= needed:
                     break
             else:
+                speech_started = True
                 silent_chunks = 0
 
     return np.concatenate(frames, axis=0).flatten()

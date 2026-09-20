@@ -8,6 +8,18 @@ from marvis import indicator
 def _demo() -> None:
     time.sleep(3)  # idle, on launch
 
+    indicator.start_listening()  # flashing red antenna light
+    time.sleep(3)
+    indicator.stop_listening()
+    time.sleep(1)
+
+    indicator.set_usage(0.42, "7d")
+    time.sleep(2)
+    indicator.set_usage(0.86, "7d")  # crosses into "warn" (amber)
+    time.sleep(2)
+    indicator.set_usage(0.97, "5h")  # crosses into "critical" (red, pulsing)
+    time.sleep(3)
+
     indicator.show()  # thinking
     time.sleep(3)
     indicator.hide()  # back to idle - triggers the lightbulb pop

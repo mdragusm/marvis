@@ -16,14 +16,48 @@ from .error_log import debug_logger
 # The module-level langid.classify()/set_languages() only expose an unnormalized,
 # unbounded score (not a probability), so a real 0-1 confidence needs the underlying
 # identifier constructed with norm_probs=True instead.
-_lang_identifier = langid.LanguageIdentifier.from_modelstring(langid.model, norm_probs=True)
-_lang_identifier.set_languages(["en", "es"])
+#
+# Building this from the packed model string takes the better part of a second, so it
+# runs in a background thread kicked off at import time instead of blocking the import
+# itself -- callers that need it (_resolve_edge_voice, wait_until_ready) block on
+# _lang_identifier_ready, which lets this overlap with stt's model load instead of
+# running after it.
+_lang_identifier: langid.langid.LanguageIdentifier | None = None
+_lang_identifier_ready = threading.Event()
 
+
+def _load_lang_identifier() -> None:
+    global _lang_identifier
+    identifier = langid.LanguageIdentifier.from_modelstring(langid.model, norm_probs=True)
+    identifier.set_languages(["en", "es"])
+    _lang_identifier = identifier
+    _lang_identifier_ready.set()
+
+
+threading.Thread(target=_load_lang_identifier, daemon=True).start()
+
+
+def wait_until_ready() -> None:
+    """Blocks until the language-identification model has finished loading."""
+    _lang_identifier_ready.wait()
+
+_CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`([^`]*)`")
 _MARKDOWN_EMPHASIS = re.compile(r"[*_]{1,3}")
 _WHITESPACE = re.compile(r"\s{2,}")
 
 
 def _strip_markdown(text: str) -> str:
+    # Sentence splitting in assistant.py treats a bare newline as a boundary, so a fenced
+    # code block's opening/closing ``` line routinely arrives here as its own isolated
+    # "sentence" (the paired regex above only matches when both fences land in the same
+    # call, e.g. a one-line block) -- stripped down to nothing rather than spoken as literal
+    # backticks. Confirmed live 2026-09-19: a reply containing a code block froze the whole
+    # app, tracked to this text reaching edge-tts unsanitized; see prepare()'s empty-text
+    # guard below for the other half of that fix.
+    text = _CODE_FENCE.sub(" ", text)
+    text = _INLINE_CODE.sub(r"\1", text)
+    text = text.replace("`", " ")
     return _WHITESPACE.sub(" ", _MARKDOWN_EMPHASIS.sub(" ", text)).strip()
 
 interrupt_event = threading.Event()
@@ -40,6 +74,8 @@ def begin_utterance() -> None:
 def _resolve_edge_voice(text: str) -> str:
     global _utterance_voice
     if _utterance_voice is None:
+        if _lang_identifier is None:
+            _lang_identifier_ready.wait()
         lang, confidence = _lang_identifier.classify(text)
         is_spanish = lang == "es" and confidence >= config.spanish_confidence_threshold
         _utterance_voice = config.edge_voice_es if is_spanish else config.edge_voice
@@ -155,11 +191,23 @@ def _prepare_edge(text: str) -> PreparedSpeech:
     return PreparedSpeech(chunks, _EDGE_SAMPLE_RATE, text=text)
 
 
+def _empty_speech(text: str) -> PreparedSpeech:
+    chunks: "queue.Queue[bytes | None]" = queue.Queue()
+    chunks.put(None)
+    return PreparedSpeech(chunks, _EDGE_SAMPLE_RATE, text=text)
+
+
 def prepare(text: str) -> PreparedSpeech:
     """Kick off synthesis for one sentence in the background. Call as soon as the sentence's
     text is known, well before it's due to play, so the network/synthesis latency overlaps
     with whatever is currently playing instead of stalling playback."""
-    return _prepare_edge(_strip_markdown(text))
+    stripped = _strip_markdown(text)
+    # A "sentence" that's pure markdown noise (e.g. a lone code-fence line, see
+    # _strip_markdown's comment) strips down to nothing -- skip the network call entirely
+    # rather than asking edge-tts to synthesize empty text.
+    if not stripped:
+        return _empty_speech(text)
+    return _prepare_edge(stripped)
 
 
 def play(prepared: PreparedSpeech) -> None:

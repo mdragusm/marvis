@@ -4,6 +4,8 @@ from pathlib import Path
 
 _STATE_DIR = Path(__file__).parent.parent / "state"
 _SESSION_FILE = _STATE_DIR / "session.json"
+_TABS_FILE = _STATE_DIR / "tabs.json"
+_TITLES_FILE = _STATE_DIR / "titles.json"
 
 
 def _history_file(session_id: str) -> Path:
@@ -87,3 +89,112 @@ def list_sessions() -> list[dict]:
     for s in sessions:
         del s["mtime"]
     return sessions
+
+
+def load_titles() -> dict:
+    if not _TITLES_FILE.exists():
+        return {}
+    try:
+        return json.loads(_TITLES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_title(session_id: str, title: str) -> None:
+    titles = load_titles()
+    titles[session_id] = title
+    _STATE_DIR.mkdir(exist_ok=True)
+    _TITLES_FILE.write_text(json.dumps(titles), encoding="utf-8")
+
+
+def _tab_label(session_id: str) -> str:
+    # A generated title (see llm.generate_title) always wins once it exists -- it's only
+    # missing for a brief window right after the first message, or for tabs from before
+    # this feature existed, so fall back to the raw first message truncated generously
+    # (the tab strip itself grows to fill window width and ellipsis-truncates in CSS,
+    # so this is just a cap against pathologically long messages, not the main mechanism).
+    titles = load_titles()
+    if session_id in titles:
+        return titles[session_id]
+    messages = load_transcript(session_id)
+    first_user = next((m["text"] for m in messages if m.get("role") == "user"), "")
+    if not first_user:
+        return "New conversation"
+    return (first_user[:80] + "...") if len(first_user) > 80 else first_user
+
+
+def is_blank(session_id: str) -> bool:
+    """True if this session has never had a message sent in it -- the tab equivalent of
+    a browser's empty new-tab page, used to decide whether opening a history item reuses
+    the current tab or opens a new one."""
+    return not load_transcript(session_id)
+
+
+def load_tab_order() -> list[str]:
+    if not _TABS_FILE.exists():
+        return []
+    try:
+        data = json.loads(_TABS_FILE.read_text(encoding="utf-8"))
+        return list(data.get("order", []))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_tab_order(order: list[str]) -> None:
+    _STATE_DIR.mkdir(exist_ok=True)
+    _TABS_FILE.write_text(json.dumps({"order": order}), encoding="utf-8")
+
+
+def reset_tabs(session_id: str) -> None:
+    """Called once per launch: every startup begins with a single fresh tab (matching
+    llm.py's "every launch starts a brand-new session" policy) rather than restoring
+    whatever tab strip was open last time -- old conversations stay reachable through
+    History instead."""
+    save_tab_order([session_id])
+
+
+def get_tabs(current_session_id: str) -> list[dict]:
+    order = load_tab_order()
+    if current_session_id not in order:
+        # Keeps a tab for the active session on screen even if something external
+        # (e.g. MARVIS_RESUME_SESSION) changed it out from under the tab strip.
+        order.append(current_session_id)
+        save_tab_order(order)
+    return [
+        {
+            "session_id": session_id,
+            "label": _tab_label(session_id),
+            "current": session_id == current_session_id,
+        }
+        for session_id in order
+    ]
+
+
+def add_tab(session_id: str, after: str | None = None) -> None:
+    order = load_tab_order()
+    if session_id in order:
+        return
+    if after is not None and after in order:
+        order.insert(order.index(after) + 1, session_id)
+    else:
+        order.append(session_id)
+    save_tab_order(order)
+
+
+def replace_tab(old_session_id: str, new_session_id: str) -> None:
+    """Swaps a tab's session in place -- used when opening a history item into a blank
+    tab, which should reuse that tab rather than spawning a new one."""
+    order = load_tab_order()
+    if old_session_id in order:
+        order[order.index(old_session_id)] = new_session_id
+    else:
+        order.append(new_session_id)
+    save_tab_order(order)
+
+
+def remove_tab(session_id: str) -> list[str]:
+    order = load_tab_order()
+    if session_id in order:
+        order.remove(session_id)
+        save_tab_order(order)
+    return order

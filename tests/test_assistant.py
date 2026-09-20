@@ -2,7 +2,7 @@ import queue
 import threading
 
 from marvis import assistant
-from marvis.assistant import _is_clear_command, _report_turn_failure, _split_sentences
+from marvis.assistant import _is_clear_command, _is_likely_hallucination, _report_turn_failure, _split_sentences
 
 
 def test_split_sentences_splits_on_terminal_punctuation():
@@ -66,6 +66,23 @@ def test_is_clear_command_rejects_unrelated_text():
     assert not _is_clear_command("")
 
 
+def test_is_likely_hallucination_matches_known_phrases_case_insensitively():
+    assert _is_likely_hallucination("Thank you.")
+    assert _is_likely_hallucination("Thank you very much.")
+    assert _is_likely_hallucination("thanks for watching")
+
+
+def test_is_likely_hallucination_ignores_trailing_punctuation():
+    assert _is_likely_hallucination("Thank you!")
+
+
+def test_is_likely_hallucination_rejects_unrelated_text():
+    assert not _is_likely_hallucination("what's the weather like")
+    assert not _is_likely_hallucination("")
+    # A real "thank you" as part of a longer sentence must still go through.
+    assert not _is_likely_hallucination("thank you for doing that yesterday")
+
+
 def test_report_turn_failure_speaks_and_records_a_fallback_message(monkeypatch):
     # Regression: an exception in _run_turn outside the LLM call path (e.g. a mic/transcription
     # error) used to be logged to marvis_error.log and otherwise leave the user with silence and
@@ -95,6 +112,29 @@ def test_report_turn_failure_speaks_and_records_a_fallback_message(monkeypatch):
         ("append_message", "session-1", "marvis", assistant._TURN_FAILURE_MESSAGE),
         ("play", ("prepared", assistant._TURN_FAILURE_MESSAGE)),
     ]
+
+
+def test_generate_and_apply_title_saves_and_pushes_the_title(monkeypatch):
+    monkeypatch.setattr(assistant, "generate_title", lambda text: "Trip Planning")
+    saved = []
+    pushed = []
+    monkeypatch.setattr(assistant.history, "save_title", lambda sid, title: saved.append((sid, title)))
+    monkeypatch.setattr(assistant.indicator, "set_tab_label", lambda sid, label: pushed.append((sid, label)))
+
+    assistant._generate_and_apply_title("session-1", "help me plan a trip")
+
+    assert saved == [("session-1", "Trip Planning")]
+    assert pushed == [("session-1", "Trip Planning")]
+
+
+def test_generate_and_apply_title_does_nothing_when_generation_fails(monkeypatch):
+    monkeypatch.setattr(assistant, "generate_title", lambda text: None)
+    saved = []
+    monkeypatch.setattr(assistant.history, "save_title", lambda sid, title: saved.append((sid, title)))
+
+    assistant._generate_and_apply_title("session-1", "hello")
+
+    assert saved == []
 
 
 def _raise_prepare_error(sentence):

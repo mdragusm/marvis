@@ -110,3 +110,71 @@ def test_ask_yields_a_fallback_and_logs_when_reading_the_stream_raises(monkeypat
     # _log_claude_error call (reused deliberately -- see the comment in llm.py's ask()).
     assert list(llm.ask("hello")) == ["hi", "\nSorry, I hit an error talking to Claude."]
     assert len(errors) == 2
+
+
+class _FakeCompletedProcess:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def test_generate_title_strips_quotes_and_whitespace(monkeypatch):
+    monkeypatch.setattr(llm.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout='  "Trip Planning"\n'))
+    assert llm.generate_title("help me plan a trip") == "Trip Planning"
+
+
+def test_generate_title_returns_none_on_nonzero_exit(monkeypatch):
+    monkeypatch.setattr(llm.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(returncode=1, stderr="boom"))
+    errors = []
+    monkeypatch.setattr(llm.error_logger, "error", lambda *a, **k: errors.append(a))
+
+    assert llm.generate_title("hello") is None
+    assert len(errors) == 1
+
+
+def test_generate_title_returns_none_when_subprocess_raises(monkeypatch):
+    # Same silent-failure risk as ask()'s own Popen guard -- this runs on a background
+    # thread from assistant.py with no other except around it.
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("no claude.exe")
+
+    monkeypatch.setattr(llm.subprocess, "run", _raise)
+    errors = []
+    monkeypatch.setattr(llm.error_logger, "error", lambda *a, **k: errors.append(a))
+
+    assert llm.generate_title("hello") is None
+    assert len(errors) == 1
+
+
+def test_report_usage_reports_whichever_window_is_closer_to_its_cap(monkeypatch):
+    reported = []
+    monkeypatch.setattr(llm.indicator, "set_usage", lambda utilization, label: reported.append((utilization, label)))
+
+    llm._report_usage({"unifiedWindows": {"five_hour": {"utilization": 0.04}, "seven_day": {"utilization": 0.78}}})
+
+    assert reported == [(0.78, "7d")]
+
+
+def test_report_usage_does_nothing_without_utilization_data(monkeypatch):
+    reported = []
+    monkeypatch.setattr(llm.indicator, "set_usage", lambda *a: reported.append(a))
+
+    llm._report_usage({})
+
+    assert reported == []
+
+
+def test_ask_reports_usage_from_a_rate_limit_event_in_the_stream(monkeypatch):
+    rate_limit_line = json.dumps({
+        "type": "rate_limit_event",
+        "rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": 0.1}, "seven_day": {"utilization": 0.62}}},
+    })
+    monkeypatch.setattr(llm.subprocess, "Popen", lambda *a, **k: _FakeProcess([rate_limit_line]))
+    monkeypatch.setattr(llm, "_session_started", True)
+    reported = []
+    monkeypatch.setattr(llm.indicator, "set_usage", lambda utilization, label: reported.append((utilization, label)))
+
+    list(llm.ask("hello"))
+
+    assert reported == [(0.62, "7d")]

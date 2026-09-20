@@ -10,9 +10,11 @@ from . import history, indicator
 from .audio import ptt_down, record_until_silence, record_while_key_held
 from .config import Mode, config
 from .error_log import logger as error_logger
-from .llm import FLUSH_SIGNAL, ask, get_session_id, reset_session
+from .llm import FLUSH_SIGNAL, ask, generate_title, get_session_id, reset_session
 from .stt import transcribe
+from .stt import wait_until_ready as stt_wait_until_ready
 from .tts import PreparedSpeech, begin_utterance, interrupt_event, play, prepare
+from .tts import wait_until_ready as tts_wait_until_ready
 from .wakeword import wait_for_wake_word
 
 _mode = Mode.PUSH_TO_TALK
@@ -43,6 +45,31 @@ _CLEAR_PHRASES = {
 def _is_clear_command(text: str) -> bool:
     normalized = text.strip().strip(".!?").lower()
     return normalized in _CLEAR_PHRASES
+
+# faster-whisper hallucinates these exact stock phrases when it transcribes near-silent or
+# noise-only audio -- e.g. a wake-word false trigger on fan hum, or trailing room noise
+# after record_until_silence stops recording. Marcelo has confirmed he never sends any of
+# these as a complete, standalone message, so treat a transcript matching one as no speech
+# at all rather than a real turn. Text mode is exempt since a typed message is never a mic
+# artifact.
+_HALLUCINATION_PHRASES = {
+    "thank you",
+    "thank you very much",
+    "thanks very much",
+    "thank you so much",
+    "thanks so much",
+    "thanks for watching",
+    "thank you for watching",
+    "please subscribe",
+    "subscribe to my channel",
+    "i'll see you in the next video",
+    "see you next time",
+}
+
+
+def _is_likely_hallucination(text: str) -> bool:
+    normalized = text.strip().strip(".!?").lower()
+    return normalized in _HALLUCINATION_PHRASES
 
 # How many sentences may be synthesized concurrently ahead of playback. Since sentence text is
 # known well before its turn to play, this overlaps TTS network/synthesis latency with the
@@ -113,6 +140,13 @@ def toggle_mode() -> None:
     indicator.set_mode(_mode.value)
 
 
+def _generate_and_apply_title(session_id: str, text: str) -> None:
+    title = generate_title(text)
+    if title:
+        history.save_title(session_id, title)
+        indicator.set_tab_label(session_id, title)
+
+
 def _run_turn(mode: Mode) -> None:
     if mode == Mode.PUSH_TO_TALK:
         while not ptt_down.is_set():
@@ -120,7 +154,9 @@ def _run_turn(mode: Mode) -> None:
                 break
             time.sleep(0.05)
         else:
+            indicator.start_listening()
             audio = record_while_key_held()
+            indicator.stop_listening()
         if get_mode() != mode:
             return
 
@@ -130,7 +166,11 @@ def _run_turn(mode: Mode) -> None:
     elif mode == Mode.WAKE_WORD:
         if not wait_for_wake_word(mode_check=lambda: get_mode() == mode):
             return
+        # Confirms the wake word landed before the user starts talking -- otherwise there's
+        # no visible sign the trigger was heard at all versus missed.
+        indicator.start_listening()
         audio = record_until_silence()
+        indicator.stop_listening()
 
         if audio.size == 0:
             return
@@ -143,10 +183,18 @@ def _run_turn(mode: Mode) -> None:
     if not text.strip():
         return
 
+    if mode != Mode.TEXT and _is_likely_hallucination(text):
+        return
+
     if mode != Mode.TEXT:
         print(f"[you] {text}")
     indicator.add_user_message(text)
-    history.append_message(get_session_id(), "user", text)
+    session_id = get_session_id()
+    history.append_message(session_id, "user", text)
+    if len(history.load_transcript(session_id)) == 1:
+        # First message of this tab's conversation -- name it in the background so the
+        # turn itself isn't held up waiting on an extra model call.
+        threading.Thread(target=_generate_and_apply_title, args=(session_id, text), daemon=True).start()
 
     if _is_clear_command(text):
         reset_session()
@@ -284,6 +332,12 @@ def _report_turn_failure() -> None:
 
 def run() -> None:
     global _ptt_hook
+    # Both loaded their heavy models in background threads starting at import time,
+    # in parallel with each other -- waiting on both here costs roughly the slower of
+    # the two instead of their sum, and keeps the mode label from showing "ready"
+    # before speech-to-text/text-to-speech actually are.
+    stt_wait_until_ready()
+    tts_wait_until_ready()
     indicator.set_mode(get_mode().value)
     keyboard.add_hotkey(config.mode_toggle_key, toggle_mode)
 

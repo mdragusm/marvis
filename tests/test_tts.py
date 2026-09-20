@@ -15,6 +15,33 @@ def test_strip_markdown_collapses_double_spaces_from_removed_markers():
     assert tts._strip_markdown("one **two** three") == "one two three"
 
 
+def test_strip_markdown_removes_a_paired_code_fence():
+    assert tts._strip_markdown("before ```code here``` after") == "before after"
+
+
+def test_strip_markdown_reduces_a_lone_fence_marker_to_nothing():
+    # Regression: assistant.py's sentence splitter treats a bare newline as a boundary, so a
+    # fenced code block's opening/closing ``` line often arrives here on its own, with no
+    # matching fence in the same call for the paired regex to catch. It must still be
+    # stripped down to nothing rather than sent to speech synthesis as literal backticks --
+    # see prepare()'s empty-text guard, added after this froze the live app.
+    assert tts._strip_markdown("```") == ""
+
+
+def test_strip_markdown_unwraps_inline_code_without_deleting_its_text():
+    assert tts._strip_markdown("check `config.py` for it") == "check config.py for it"
+
+
+def test_prepare_skips_synthesis_for_text_that_strips_to_nothing(monkeypatch):
+    called = []
+    monkeypatch.setattr(tts, "_prepare_edge", lambda text: called.append(text))
+
+    prepared = tts.prepare("```")
+
+    assert called == []
+    assert prepared.chunks.get() is None
+
+
 def test_resolve_edge_voice_defaults_to_english_for_english_text(monkeypatch):
     monkeypatch.setattr(tts, "_utterance_voice", None)
     assert tts._resolve_edge_voice("What's the weather like today?") == config.edge_voice

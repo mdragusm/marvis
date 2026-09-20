@@ -55,10 +55,74 @@ class _Api:
 
         return history.load_transcript(session_id)
 
-    def switch_session(self, session_id: str) -> None:
+    def init_tabs(self) -> dict:
+        """Called once when the overlay first loads -- resets the tab strip to a single
+        fresh tab for this launch's session (see history.reset_tabs)."""
+        from marvis import history
+        from marvis.llm import get_session_id
+
+        session_id = get_session_id()
+        history.reset_tabs(session_id)
+        return {"tabs": history.get_tabs(session_id), "transcript": history.load_transcript(session_id)}
+
+    def new_tab(self) -> dict:
+        from marvis import history
+        from marvis.llm import get_session_id, reset_session
+
+        reset_session()
+        session_id = get_session_id()
+        history.add_tab(session_id)
+        return {"tabs": history.get_tabs(session_id), "transcript": []}
+
+    def select_tab(self, session_id: str) -> dict:
+        from marvis import history
         from marvis.llm import switch_session
 
         switch_session(session_id)
+        return {"tabs": history.get_tabs(session_id), "transcript": history.load_transcript(session_id)}
+
+    def close_tab(self, session_id: str) -> dict:
+        from marvis import history
+        from marvis.llm import get_session_id, reset_session, switch_session
+
+        closing_active = session_id == get_session_id()
+        order = history.load_tab_order()
+        closed_index = order.index(session_id) if session_id in order else None
+        remaining = history.remove_tab(session_id)
+
+        if closing_active:
+            if remaining:
+                # Mirrors Chrome: activate the tab that slides into the closed one's
+                # spot (its right neighbor), or the new last tab if it was rightmost.
+                next_active = remaining[closed_index] if closed_index is not None and closed_index < len(remaining) else remaining[-1]
+                switch_session(next_active)
+            else:
+                # Closed the only tab -- mirrors app startup: land on one fresh blank
+                # tab rather than leaving no active conversation at all.
+                reset_session()
+                history.add_tab(get_session_id())
+
+        active_id = get_session_id()
+        return {"tabs": history.get_tabs(active_id), "transcript": history.load_transcript(active_id)}
+
+    def select_history(self, session_id: str) -> dict:
+        """Opens a past conversation from the History panel. Reuses the current tab if
+        it's still blank (never sent a message); otherwise opens it as a new tab next to
+        the current one, or just activates it if it's already open in one."""
+        from marvis import history
+        from marvis.llm import get_session_id, switch_session
+
+        current_id = get_session_id()
+        open_ids = {t["session_id"] for t in history.get_tabs(current_id)}
+
+        if session_id not in open_ids:
+            if history.is_blank(current_id):
+                history.replace_tab(current_id, session_id)
+            else:
+                history.add_tab(session_id, after=current_id)
+
+        switch_session(session_id)
+        return {"tabs": history.get_tabs(session_id), "transcript": history.load_transcript(session_id)}
 
 
 def set_mode(mode_label: str) -> None:
@@ -81,6 +145,18 @@ def stop_speaking() -> None:
     _commands.put(("speak_stop",))
 
 
+def start_listening() -> None:
+    _commands.put(("listen_start",))
+
+
+def stop_listening() -> None:
+    _commands.put(("listen_stop",))
+
+
+def set_usage(utilization: float, window_label: str) -> None:
+    _commands.put(("usage", utilization, window_label))
+
+
 def set_levels(levels) -> None:
     _commands.put(("levels", list(levels)))
 
@@ -95,6 +171,10 @@ def start_marvis_message() -> None:
 
 def append_marvis_message(text: str) -> None:
     _commands.put(("marvis_append", text))
+
+
+def set_tab_label(session_id: str, label: str) -> None:
+    _commands.put(("tab_label", session_id, label))
 
 
 _TEXT_INPUT_POLL_TIMEOUT = 0.1
@@ -125,6 +205,12 @@ def _poll_commands() -> None:
                 _window.evaluate_js("marvisOverlay.startSpeaking()")
             elif cmd == "speak_stop":
                 _window.evaluate_js("marvisOverlay.stopSpeaking()")
+            elif cmd == "listen_start":
+                _window.evaluate_js("marvisOverlay.startListening()")
+            elif cmd == "listen_stop":
+                _window.evaluate_js("marvisOverlay.stopListening()")
+            elif cmd == "usage":
+                _window.evaluate_js(f"marvisOverlay.setUsage({json.dumps(rest[0])}, {json.dumps(rest[1])})")
             elif cmd == "levels":
                 _window.evaluate_js(f"marvisOverlay.setLevels({json.dumps(rest[0])})")
             elif cmd == "mode":
@@ -135,6 +221,8 @@ def _poll_commands() -> None:
                 _window.evaluate_js("marvisOverlay.startMarvisMessage()")
             elif cmd == "marvis_append":
                 _window.evaluate_js(f"marvisOverlay.appendMarvisMessage({json.dumps(rest[0])})")
+            elif cmd == "tab_label":
+                _window.evaluate_js(f"marvisOverlay.setTabLabel({json.dumps(rest[0])}, {json.dumps(rest[1])})")
         except Exception:
             pass  # the window may be mid-teardown
 
@@ -156,9 +244,13 @@ def run(main_func: Callable[[], None]) -> None:
         "Marvis",
         url=_HTML_PATH.as_uri(),
         resizable=True,
-        on_top=True,
+        on_top=False,
         width=_WIDTH,
         height=_HEIGHT,
         js_api=_Api(),
+        # pywebview disables text selection app-wide by default (injects a global
+        # `user-select: none` rule) -- without this, chat text can't be selected or
+        # copied at all, regardless of any CSS in overlay.html itself.
+        text_select=True,
     )
     webview.start(_on_ready, (main_func,), debug=False, icon=str(_ICON_PATH))
