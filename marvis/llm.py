@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -39,6 +40,56 @@ SYSTEM_PROMPT = (
     "briefly ask the user for confirmation out loud first -- unless they've "
     "already told you it's fine to do that kind of thing automatically."
 )
+
+# Two tiers, picked per turn by _classify_tier below. Marvis's subprocess would otherwise
+# inherit the global settings.json (model=opus[1m], effort=xhigh) -- max-reasoning premium
+# Opus on *every* spoken turn, trivial or not, which is what made a single "did the fix
+# work?" turn cost ~10% of a plan window (see CHANGELOG 2026-09-21). Quick handles the
+# common case cheaply; Deep is reserved for genuinely reasoning-heavy/agentic asks. Note
+# Deep uses plain opus, not opus[1m] -- voice turns never approach the 200k context where
+# the 1M-window premium tier would be worth its extra cost.
+_QUICK_MODEL, _QUICK_EFFORT = "claude-sonnet-4-6", "low"
+_DEEP_MODEL, _DEEP_EFFORT = "claude-opus-4-8", "high"
+
+# Spoken overrides that beat the heuristic outright -- you directly asking for (or waving
+# off) more thought. Checked before the signal heuristic so an explicit cue always wins.
+_FORCE_QUICK = re.compile(
+    r"\b(quick(ly)? answer|short answer|just answer|don'?t overthink|keep it (quick|short|brief))\b",
+    re.I,
+)
+_FORCE_DEEP = re.compile(
+    r"\b(think (hard(er)?|carefully|about (this|it)|it through)|think really hard|"
+    r"carefully|take your time|deep dive|really think)\b",
+    re.I,
+)
+# Heuristic signals of a reasoning-heavy or agentic request. Deliberately conservative and
+# biased toward Quick: a false Deep (Opus on a trivial question) is the expensive mistake we
+# want to avoid, while a false Quick just means Sonnet -- still capable -- answers, and the
+# _FORCE_DEEP cue is always available to escalate by voice. So soft words that show up in
+# trivial questions too ("why", "explain", "compare") are intentionally left out.
+_DEEP_SIGNALS = re.compile(
+    r"\b(figure (this |it |that )?out|work (this |it |that )?out|think (this |it )?through|"
+    r"walk me through|step by step|debug|diagnose|troubleshoot|root cause|"
+    r"refactor|optimi[sz]e|implement|derive|prove|trade-?offs?|pros and cons|"
+    r"write\b.{0,30}?\b(code|functions?|scripts?|programs?|quer(?:y|ies)|regexe?s?|classes?|methods?|tests?))\b",
+    re.I,
+)
+# A long spoken request is itself a signal it isn't a trivial one-liner.
+_DEEP_WORD_COUNT = 40
+
+
+def _classify_tier(text: str) -> tuple[str, str]:
+    """Pick (model, effort) for this turn via cheap local rules -- no extra model call, no
+    latency. Explicit spoken cues win; otherwise reasoning-heavy/agentic or long requests
+    go Deep and everything else -- the common case -- goes Quick."""
+    if _FORCE_QUICK.search(text):
+        return _QUICK_MODEL, _QUICK_EFFORT
+    if _FORCE_DEEP.search(text):
+        return _DEEP_MODEL, _DEEP_EFFORT
+    if _DEEP_SIGNALS.search(text) or len(text.split()) >= _DEEP_WORD_COUNT:
+        return _DEEP_MODEL, _DEEP_EFFORT
+    return _QUICK_MODEL, _QUICK_EFFORT
+
 
 # Every launch starts a brand-new session by default -- no auto-resume of whatever was
 # last active -- so past conversations only come back via the History button's explicit
@@ -163,8 +214,12 @@ def ask(text: str) -> Iterator[str]:
     global _session_id, _session_started
 
     creating_session = not _session_started
+    model, effort = _classify_tier(text)
+    print(f"[marvis] tier -> {model} (effort={effort})", flush=True)
     command = [
         _CLAUDE, "-p", text,
+        "--model", model,
+        "--effort", effort,
         "--output-format", "stream-json",
         "--include-partial-messages",
         "--verbose",

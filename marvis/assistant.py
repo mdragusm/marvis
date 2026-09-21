@@ -13,7 +13,7 @@ from .error_log import logger as error_logger
 from .llm import FLUSH_SIGNAL, ask, generate_title, get_session_id, reset_session
 from .stt import transcribe
 from .stt import wait_until_ready as stt_wait_until_ready
-from .tts import PreparedSpeech, begin_utterance, interrupt_event, play, prepare
+from .tts import PreparedSpeech, begin_utterance, end_utterance, interrupt_event, play, prepare
 from .tts import wait_until_ready as tts_wait_until_ready
 from .wakeword import wait_for_wake_word
 
@@ -204,6 +204,7 @@ def _run_turn(mode: Mode) -> None:
         indicator.append_marvis_message("Starting fresh.")
         history.append_message(get_session_id(), "marvis", "Starting fresh.")
         play(prepare("Starting fresh."))
+        end_utterance()
         indicator.hide()
         print()
         return
@@ -275,6 +276,7 @@ def _run_turn(mode: Mode) -> None:
 
     speech_queue.put(None)
     speech_thread.join()
+    end_utterance()
     # Only now is the turn actually over (every sentence has either played or been
     # skipped by an interrupt) -- safe to finally show idle instead of "thinking".
     indicator.hide()
@@ -327,6 +329,7 @@ def _report_turn_failure() -> None:
     indicator.append_marvis_message(_TURN_FAILURE_MESSAGE)
     history.append_message(get_session_id(), "marvis", _TURN_FAILURE_MESSAGE)
     play(prepare(_TURN_FAILURE_MESSAGE))
+    end_utterance()
     indicator.hide()
 
 

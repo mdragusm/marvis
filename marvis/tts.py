@@ -66,9 +66,12 @@ _utterance_voice: str | None = None
 
 
 def begin_utterance() -> None:
-    """Reset the locked edge-tts voice; call once per new reply so language detection re-runs."""
+    """Reset the locked edge-tts voice; call once per new reply so language detection re-runs.
+    Also tears down any output stream a previous reply left open (e.g. one that ended without a
+    matching end_utterance), so every reply starts from a clean device."""
     global _utterance_voice
     _utterance_voice = None
+    _close_stream()
 
 
 def _resolve_edge_voice(text: str) -> str:
@@ -210,15 +213,57 @@ def prepare(text: str) -> PreparedSpeech:
     return _prepare_edge(stripped)
 
 
+# The output stream is kept open across every sentence in a reply and only torn down at the
+# end (end_utterance) or on interrupt. Opening a stream is cheap (~6ms) but closing it costs
+# ~215ms (measured) -- doing that per sentence was the entire audible gap between sentences.
+_stream_lock = threading.Lock()
+_stream: sd.RawOutputStream | None = None
+_stream_format: tuple[int, int] | None = None
+
+
+def _get_stream(sample_rate: int, channels: int) -> sd.RawOutputStream:
+    global _stream, _stream_format
+    with _stream_lock:
+        if _stream is not None and _stream_format != (sample_rate, channels):
+            _stream.stop()
+            _stream.close()
+            _stream = None
+        if _stream is None:
+            _stream = sd.RawOutputStream(samplerate=sample_rate, channels=channels, dtype="int16")
+            _stream.start()
+            _stream_format = (sample_rate, channels)
+        return _stream
+
+
+def _close_stream() -> None:
+    global _stream, _stream_format
+    with _stream_lock:
+        if _stream is not None:
+            _stream.stop()
+            _stream.close()
+            _stream = None
+            _stream_format = None
+
+
+def end_utterance() -> None:
+    """Close the shared output stream once a whole reply has finished playing. Idempotent --
+    safe to call when nothing is open."""
+    _close_stream()
+
+
 def play(prepared: PreparedSpeech) -> None:
-    """Play back audio from prepare(), blocking until it finishes."""
+    """Play back audio from prepare(), blocking until it finishes. The output stream is shared
+    across the reply's sentences and left open here; the caller ends the reply with
+    end_utterance(). An interrupt closes it immediately so playback is cut on the spot."""
     indicator.start_speaking()
     stream = None
     play_started = time.monotonic()
     first_chunk_logged = False
+    interrupted = False
     try:
         while True:
             if interrupt_event.is_set():
+                interrupted = True
                 break
             try:
                 chunk = prepared.chunks.get(timeout=0.1)
@@ -233,14 +278,14 @@ def play(prepared: PreparedSpeech) -> None:
             if chunk is None:
                 break
             if stream is None:
-                stream = sd.RawOutputStream(
-                    samplerate=prepared.sample_rate, channels=prepared.channels, dtype="int16"
-                )
-                stream.start()
+                stream = _get_stream(prepared.sample_rate, prepared.channels)
             if not _write_with_levels(stream, chunk):
+                interrupted = True
                 break
     finally:
-        if stream is not None:
-            stream.stop()
-            stream.close()
+        # Between sentences the stream stays open (that's the whole point); only tear it down
+        # when playback is actually ending -- on interrupt here, or via end_utterance() after
+        # the reply's last sentence.
+        if interrupted:
+            _close_stream()
         indicator.stop_speaking()

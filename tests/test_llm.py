@@ -147,6 +147,36 @@ def test_generate_title_returns_none_when_subprocess_raises(monkeypatch):
     assert len(errors) == 1
 
 
+def test_classify_tier_sends_the_common_trivial_turn_to_quick():
+    # The whole point of the tiering: a plain spoken turn -- the overwhelming majority --
+    # must not pay for premium Opus + high effort. "did the last fix work" is the exact
+    # phrasing that motivated this (see CHANGELOG 2026-09-21); "fix"/"work" here are not
+    # deep signals.
+    for text in ["what time is it", "did the last fix work", "what's the weather like",
+                 "why is the sky blue", "remind me to call mom"]:
+        model, effort = llm._classify_tier(text)
+        assert (model, effort) == (llm._QUICK_MODEL, llm._QUICK_EFFORT), text
+
+
+def test_classify_tier_escalates_reasoning_heavy_and_long_requests_to_deep():
+    for text in ["figure out why the wake word keeps missing", "debug this stack trace",
+                 "walk me through the tts pipeline", "help me refactor the assistant module",
+                 "write me a python function to parse a csv"]:
+        model, effort = llm._classify_tier(text)
+        assert (model, effort) == (llm._DEEP_MODEL, llm._DEEP_EFFORT), text
+    # A long request is itself a signal it isn't a one-liner, even with no keyword.
+    long_request = " ".join(["blah"] * llm._DEEP_WORD_COUNT)
+    assert llm._classify_tier(long_request) == (llm._DEEP_MODEL, llm._DEEP_EFFORT)
+
+
+def test_classify_tier_spoken_overrides_beat_the_heuristic():
+    # "think hard" forces Deep even on an otherwise-trivial ask...
+    assert llm._classify_tier("think hard, what should I name it") == (llm._DEEP_MODEL, llm._DEEP_EFFORT)
+    # ...and "quick answer" forces Quick even when a deep keyword is present, so the manual
+    # escape hatch works in both directions.
+    assert llm._classify_tier("quick answer, debug this for me") == (llm._QUICK_MODEL, llm._QUICK_EFFORT)
+
+
 def test_report_usage_reports_whichever_window_is_closer_to_its_cap(monkeypatch):
     reported = []
     monkeypatch.setattr(llm.indicator, "set_usage", lambda utilization, label: reported.append((utilization, label)))
