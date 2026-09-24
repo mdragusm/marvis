@@ -192,6 +192,18 @@ def replace_tab(old_session_id: str, new_session_id: str) -> None:
     save_tab_order(order)
 
 
+def delete_session(session_id: str) -> None:
+    """Permanently deletes a session's history file and title entry."""
+    path = _history_file(session_id)
+    if path.exists():
+        path.unlink()
+    titles = load_titles()
+    if session_id in titles:
+        del titles[session_id]
+        _STATE_DIR.mkdir(exist_ok=True)
+        _TITLES_FILE.write_text(json.dumps(titles), encoding="utf-8")
+
+
 def remove_tab(session_id: str) -> list[str]:
     order = load_tab_order()
     if session_id in order:

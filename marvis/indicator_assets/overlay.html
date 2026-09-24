@@ -99,16 +99,26 @@
     border: 1px solid rgba(77, 163, 255, 0.3); border-bottom-left-radius: 2px;
   }
   .sessionItem {
+    display: flex; align-items: center; gap: 8px;
     padding: 8px 10px; border-radius: 8px; cursor: pointer;
     background: #1c212b; border: 1px solid #2c3240;
   }
   .sessionItem:hover { background: #232a37; }
   .sessionItem.current { border-color: #4da3ff; }
+  .sessionItemBody { flex: 1; min-width: 0; }
   .sessionTime { font-size: 11px; color: #6b7686; margin-bottom: 3px; }
   .sessionPreview {
     font-size: 13px; color: #cfd8e3; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis;
   }
+  .sessionDelete {
+    flex: 0 0 auto; width: 20px; height: 20px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    color: #6b7686; font-size: 14px; line-height: 1;
+    opacity: 0; transition: opacity 0.15s;
+  }
+  .sessionItem:hover .sessionDelete { opacity: 1; }
+  .sessionDelete:hover { background: #3a1e1e; color: #e05a4a; }
   .sessionEmpty { font-size: 12px; color: #6b7686; text-align: center; padding: 20px 0; }
 </style>
 </head>
@@ -362,32 +372,45 @@ function loadHistoryItem(sessionId) {
   window.pywebview.api.select_history(sessionId).then(applyTabState);
 }
 
+function renderHistoryList(sessions) {
+  chatEl.innerHTML = '';
+  currentMarvisMsgEl = null;
+  if (sessions.length === 0) {
+    const el = document.createElement('div');
+    el.className = 'sessionEmpty';
+    el.textContent = 'No past conversations yet.';
+    chatEl.appendChild(el);
+    return;
+  }
+  for (const s of sessions) {
+    const el = document.createElement('div');
+    el.className = 'sessionItem' + (s.current ? ' current' : '');
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'sessionItemBody';
+    const timeEl = document.createElement('div');
+    timeEl.className = 'sessionTime';
+    timeEl.textContent = s.label + (s.current ? ' (current)' : '');
+    const previewEl = document.createElement('div');
+    previewEl.className = 'sessionPreview';
+    previewEl.textContent = s.preview;
+    bodyEl.appendChild(timeEl);
+    bodyEl.appendChild(previewEl);
+    const delEl = document.createElement('div');
+    delEl.className = 'sessionDelete';
+    delEl.textContent = '×';
+    delEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.pywebview.api.delete_session(s.session_id).then(renderHistoryList);
+    });
+    el.appendChild(bodyEl);
+    el.appendChild(delEl);
+    el.addEventListener('click', () => loadHistoryItem(s.session_id));
+    chatEl.appendChild(el);
+  }
+}
+
 document.getElementById('historyBtn').addEventListener('click', () => {
-  window.pywebview.api.get_sessions().then((sessions) => {
-    chatEl.innerHTML = '';
-    currentMarvisMsgEl = null;
-    if (sessions.length === 0) {
-      const el = document.createElement('div');
-      el.className = 'sessionEmpty';
-      el.textContent = 'No past conversations yet.';
-      chatEl.appendChild(el);
-      return;
-    }
-    for (const s of sessions) {
-      const el = document.createElement('div');
-      el.className = 'sessionItem' + (s.current ? ' current' : '');
-      const timeEl = document.createElement('div');
-      timeEl.className = 'sessionTime';
-      timeEl.textContent = s.label + (s.current ? ' (current)' : '');
-      const previewEl = document.createElement('div');
-      previewEl.className = 'sessionPreview';
-      previewEl.textContent = s.preview;
-      el.appendChild(timeEl);
-      el.appendChild(previewEl);
-      el.addEventListener('click', () => loadHistoryItem(s.session_id));
-      chatEl.appendChild(el);
-    }
-  });
+  window.pywebview.api.get_sessions().then(renderHistoryList);
 });
 textInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !textInput.disabled && textInput.value.trim()) {

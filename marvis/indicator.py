@@ -105,6 +105,12 @@ class _Api:
         active_id = get_session_id()
         return {"tabs": history.get_tabs(active_id), "transcript": history.load_transcript(active_id)}
 
+    def delete_session(self, session_id: str) -> list:
+        from marvis import history
+
+        history.delete_session(session_id)
+        return history.list_sessions()
+
     def select_history(self, session_id: str) -> dict:
         """Opens a past conversation from the History panel. Reuses the current tab if
         it's still blank (never sent a message); otherwise opens it as a new tab next to

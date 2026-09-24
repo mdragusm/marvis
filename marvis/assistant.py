@@ -121,9 +121,16 @@ def _speech_worker(prepared_queue: "queue.Queue[PreparedSpeech | None]") -> None
         prepared = prepared_queue.get()
         if prepared is None:
             return
-        if not interrupt_event.is_set():
-            play(prepared)
-        _prepare_gate.release()
+        try:
+            if not interrupt_event.is_set():
+                play(prepared)
+        except Exception:
+            # A playback failure (e.g. an output device vanishing in a way play() can't recover
+            # from) must not kill the worker thread or leak the pipeline permit -- log it and move
+            # on so the rest of the reply, and every future turn, still run.
+            error_logger.error("playback failed:\n%s", traceback.format_exc())
+        finally:
+            _prepare_gate.release()
 
 
 def get_mode() -> Mode:
