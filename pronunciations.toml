@@ -1,0 +1,12 @@
+# Pronunciation overrides for Marvis TTS.
+# Map the written word (left) to what should be spoken aloud (right).
+# Matching is case-insensitive and whole-word only.
+#
+# Examples:
+#   "API" = "A P I"
+#   "DTS" = "D T S"
+#   "Wordle" = "Wordl"
+
+[pronunciations]
+"Gerson" = "hersOn"
+"plugin" = "plugIn"
