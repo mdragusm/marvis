@@ -102,7 +102,7 @@ def test_report_turn_failure_speaks_and_records_a_fallback_message(monkeypatch):
     monkeypatch.setattr(assistant, "play", lambda prepared: calls.append(("play", prepared)))
     assistant.interrupt_event.set()
 
-    _report_turn_failure()
+    _report_turn_failure("session-1")
 
     assert not assistant.interrupt_event.is_set()
     assert calls == [

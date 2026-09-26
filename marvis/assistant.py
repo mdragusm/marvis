@@ -209,6 +209,8 @@ def _run_turn(mode: Mode) -> None:
         begin_utterance()
         indicator.start_marvis_message()
         indicator.append_marvis_message("Starting fresh.")
+        # get_session_id() here is correct: reset_session() was just called above,
+        # so this correctly targets the brand-new session (not the cleared one).
         history.append_message(get_session_id(), "marvis", "Starting fresh.")
         play(prepare("Starting fresh."))
         end_utterance()
@@ -289,7 +291,11 @@ def _run_turn(mode: Mode) -> None:
     indicator.hide()
 
     if full_reply.strip():
-        history.append_message(get_session_id(), "marvis", full_reply.strip())
+        # Persist to the session this turn *started* in, not get_session_id()'s current
+        # value: if the user switched tabs mid-reply, switch_session has since moved the
+        # active session, so re-fetching here would file the reply under the wrong tab
+        # (and it would vanish from the one it was actually spoken in).
+        history.append_message(session_id, "marvis", full_reply.strip())
 
     print()
 
@@ -326,15 +332,19 @@ def _rehook_watchdog(interval: float = 20.0) -> None:
 _TURN_FAILURE_MESSAGE = "Sorry, something went wrong that turn."
 
 
-def _report_turn_failure() -> None:
+def _report_turn_failure(session_id: str) -> None:
     """Speaks and records the same generic fallback a failed LLM call already gets (see
     llm.ask's "Sorry, I hit an error talking to Claude"), so any other turn-level exception
-    fails loud instead of silently -- see run()'s except block for why that matters here."""
+    fails loud instead of silently -- see run()'s except block for why that matters here.
+
+    session_id must be captured by the caller at the START of the turn; passing
+    get_session_id() here would re-read the global after any tab switch that happened
+    mid-turn and record the failure under the wrong conversation."""
     interrupt_event.clear()
     begin_utterance()
     indicator.start_marvis_message()
     indicator.append_marvis_message(_TURN_FAILURE_MESSAGE)
-    history.append_message(get_session_id(), "marvis", _TURN_FAILURE_MESSAGE)
+    history.append_message(session_id, "marvis", _TURN_FAILURE_MESSAGE)
     play(prepare(_TURN_FAILURE_MESSAGE))
     end_utterance()
     indicator.hide()
@@ -361,6 +371,8 @@ def run() -> None:
 
     while True:
         mode = get_mode()
+        # Capture now, before _run_turn (or any tab switch it triggers) can change it.
+        turn_session_id = get_session_id()
         try:
             _run_turn(mode)
         except Exception:
@@ -370,7 +382,7 @@ def run() -> None:
             error_logger.error("turn failed:\n%s", traceback.format_exc())
             indicator.hide()
             try:
-                _report_turn_failure()
+                _report_turn_failure(turn_session_id)
             except Exception:
                 # Reporting the failure must not itself become an unreported failure.
                 error_logger.error("failed to report turn failure:\n%s", traceback.format_exc())

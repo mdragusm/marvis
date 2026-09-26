@@ -213,7 +213,13 @@ def switch_session(session_id: str) -> None:
 def ask(text: str) -> Iterator[str]:
     global _session_id, _session_started
 
-    creating_session = not _session_started
+    # Snapshot both identity fields together at invocation time so the subprocess
+    # command and all end-of-stream writebacks operate on a consistent view.
+    # A tab switch mid-stream mutates _session_id/_session_started on another thread;
+    # the writebacks below guard on invoked_session_id to avoid clobbering the new tab.
+    invoked_session_id = _session_id
+    invoked_started = _session_started
+    creating_session = not invoked_started
     model, effort = _classify_tier(text)
     print(f"[marvis] tier -> {model} (effort={effort})", flush=True)
     command = [
@@ -225,7 +231,7 @@ def ask(text: str) -> Iterator[str]:
         "--verbose",
         "--dangerously-skip-permissions",
         "--append-system-prompt", SYSTEM_PROMPT,
-        "--resume" if _session_started else "--session-id", _session_id,
+        "--resume" if invoked_started else "--session-id", invoked_session_id,
     ]
     try:
         process = subprocess.Popen(
@@ -301,11 +307,13 @@ def ask(text: str) -> Iterator[str]:
     stderr_thread.join()
     stderr_text = "".join(stderr_lines).strip()
     if is_error or process.returncode != 0:
-        if creating_session:
+        if creating_session and _session_id == invoked_session_id:
             # The claude CLI never actually created this session (the call that
             # was supposed to create it just failed), so the next attempt must
             # retry with --session-id rather than --resume a session that
             # doesn't exist -- otherwise every future call fails the same way.
+            # Guard on session identity: if a tab switch happened mid-stream, the
+            # global already belongs to a different session -- don't corrupt its flag.
             _session_started = False
         elif "No conversation found" in stderr_text:
             # Our persisted session id is stale (e.g. claude's own session
@@ -315,6 +323,11 @@ def ask(text: str) -> Iterator[str]:
         _log_claude_error(stderr_text, process.returncode)
         yield "\nSorry, I hit an error talking to Claude."
     else:
-        _session_started = True
-        if creating_session:
-            history.save_current_session(_session_id, started=True)
+        # Only write back if the session hasn't changed under us mid-stream.
+        # A tab switch (reset_session / switch_session) sets _session_started to
+        # False or True for the NEW tab; overwriting it here would tell the next
+        # turn to --resume a session the claude CLI never created.
+        if _session_id == invoked_session_id:
+            _session_started = True
+            if creating_session:
+                history.save_current_session(_session_id, started=True)

@@ -28,6 +28,17 @@ def test_strip_markdown_reduces_a_lone_fence_marker_to_nothing():
     assert tts._strip_markdown("```") == ""
 
 
+def test_strip_markdown_removes_horizontal_rules():
+    # Regression: a --- separator sent as an isolated "sentence" (after the newline
+    # splitter in assistant.py) was passed straight to edge-tts, which synthesises
+    # silence / nothing for it -- confirmed live when a truncated reply ended on ---.
+    assert tts._strip_markdown("---") == ""
+    assert tts._strip_markdown("***") == ""
+    assert tts._strip_markdown("___") == ""
+    # Must not strip dashes that are part of real words or list items.
+    assert tts._strip_markdown("step-by-step") == "step-by-step"
+
+
 def test_strip_markdown_unwraps_inline_code_without_deleting_its_text():
     assert tts._strip_markdown("check `config.py` for it") == "check config.py for it"
 

@@ -1,7 +1,9 @@
+import pathlib
 import queue
 import re
 import threading
 import time
+import tomllib
 from dataclasses import dataclass, field
 
 import langid.langid as langid
@@ -44,7 +46,36 @@ def wait_until_ready() -> None:
 _CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _MARKDOWN_EMPHASIS = re.compile(r"[*_]{1,3}")
+# Horizontal rules (--- / *** / ___) that arrive as isolated "sentences" after the
+# newline splitter in assistant.py -- no spoken equivalent, just strip them entirely.
+_HORIZONTAL_RULE = re.compile(r"^[-*_]{3,}\s*$", re.MULTILINE)
 _WHITESPACE = re.compile(r"\s{2,}")
+
+_PRONUNCIATIONS_FILE = pathlib.Path(__file__).parent.parent / "pronunciations.toml"
+_pronunciations: dict[str, tuple[re.Pattern, str]] = {}
+
+
+def _load_pronunciations() -> None:
+    global _pronunciations
+    if not _PRONUNCIATIONS_FILE.exists():
+        _pronunciations = {}
+        return
+    with open(_PRONUNCIATIONS_FILE, "rb") as f:
+        data = tomllib.load(f)
+    entries = data.get("pronunciations", {})
+    _pronunciations = {
+        word: (re.compile(r"(?<!\w)" + re.escape(word) + r"(?!\w)", re.IGNORECASE), spoken)
+        for word, spoken in entries.items()
+    }
+
+
+_load_pronunciations()
+
+
+def _apply_pronunciations(text: str) -> str:
+    for pattern, spoken in _pronunciations.values():
+        text = pattern.sub(spoken, text)
+    return text
 
 
 def _strip_markdown(text: str) -> str:
@@ -58,6 +89,7 @@ def _strip_markdown(text: str) -> str:
     text = _CODE_FENCE.sub(" ", text)
     text = _INLINE_CODE.sub(r"\1", text)
     text = text.replace("`", " ")
+    text = _HORIZONTAL_RULE.sub(" ", text)
     return _WHITESPACE.sub(" ", _MARKDOWN_EMPHASIS.sub(" ", text)).strip()
 
 interrupt_event = threading.Event()
@@ -264,7 +296,7 @@ def prepare(text: str) -> PreparedSpeech:
     # rather than asking edge-tts to synthesize empty text.
     if not stripped:
         return _empty_speech(text)
-    return _prepare_edge(stripped)
+    return _prepare_edge(_apply_pronunciations(stripped))
 
 
 # The output stream is kept open across every sentence in a reply and only torn down at the
