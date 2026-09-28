@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -32,6 +33,7 @@ class Config:
     push_to_talk_key: str = "`"
     mode_toggle_key: str = "tab"
     resume_session_id: str | None = os.getenv("MARVIS_RESUME_SESSION") or None
+    projects_base_dir: str = os.getenv("PROJECTS_BASE_DIR", str(Path.home() / "Documents"))
 
 
 config = Config()

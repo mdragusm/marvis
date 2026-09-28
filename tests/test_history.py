@@ -96,7 +96,7 @@ def test_get_tabs_labels_blank_session_as_new_conversation(monkeypatch, tmp_path
     _use_tmp_state_dir(monkeypatch, tmp_path)
     history.save_tab_order(["session-1"])
     tabs = history.get_tabs("session-1")
-    assert tabs == [{"session_id": "session-1", "label": "New conversation", "current": True}]
+    assert tabs == [{"session_id": "session-1", "label": "New conversation", "current": True, "folder_name": None}]
 
 
 def test_get_tabs_uses_first_user_message_as_label(monkeypatch, tmp_path):

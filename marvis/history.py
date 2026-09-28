@@ -130,19 +130,43 @@ def is_blank(session_id: str) -> bool:
     return not load_transcript(session_id)
 
 
-def load_tab_order() -> list[str]:
+def _load_tabs_data() -> dict:
     if not _TABS_FILE.exists():
-        return []
+        return {"order": [], "folders": {}}
     try:
         data = json.loads(_TABS_FILE.read_text(encoding="utf-8"))
-        return list(data.get("order", []))
+        if "order" not in data:
+            return {"order": [], "folders": {}}
+        if "folders" not in data:
+            data["folders"] = {}
+        return data
     except (json.JSONDecodeError, OSError):
-        return []
+        return {"order": [], "folders": {}}
+
+
+def _save_tabs_data(data: dict) -> None:
+    _STATE_DIR.mkdir(exist_ok=True)
+    _TABS_FILE.write_text(json.dumps(data), encoding="utf-8")
+
+
+def load_tab_order() -> list[str]:
+    return list(_load_tabs_data().get("order", []))
 
 
 def save_tab_order(order: list[str]) -> None:
-    _STATE_DIR.mkdir(exist_ok=True)
-    _TABS_FILE.write_text(json.dumps({"order": order}), encoding="utf-8")
+    data = _load_tabs_data()
+    data["order"] = order
+    _save_tabs_data(data)
+
+
+def get_tab_folder(session_id: str) -> str | None:
+    return _load_tabs_data().get("folders", {}).get(session_id)
+
+
+def set_tab_folder(session_id: str, folder: str) -> None:
+    data = _load_tabs_data()
+    data.setdefault("folders", {})[session_id] = folder
+    _save_tabs_data(data)
 
 
 def reset_tabs(session_id: str) -> None:
@@ -154,20 +178,25 @@ def reset_tabs(session_id: str) -> None:
 
 
 def get_tabs(current_session_id: str) -> list[dict]:
-    order = load_tab_order()
+    data = _load_tabs_data()
+    order = list(data.get("order", []))
+    folders = data.get("folders", {})
     if current_session_id not in order:
         # Keeps a tab for the active session on screen even if something external
         # (e.g. MARVIS_RESUME_SESSION) changed it out from under the tab strip.
         order.append(current_session_id)
-        save_tab_order(order)
-    return [
-        {
+        data["order"] = order
+        _save_tabs_data(data)
+    tabs = []
+    for session_id in order:
+        folder = folders.get(session_id)
+        tabs.append({
             "session_id": session_id,
             "label": _tab_label(session_id),
             "current": session_id == current_session_id,
-        }
-        for session_id in order
-    ]
+            "folder_name": Path(folder).name if folder else None,
+        })
+    return tabs
 
 
 def add_tab(session_id: str, after: str | None = None) -> None:
@@ -205,8 +234,11 @@ def delete_session(session_id: str) -> None:
 
 
 def remove_tab(session_id: str) -> list[str]:
-    order = load_tab_order()
+    data = _load_tabs_data()
+    order = list(data.get("order", []))
     if session_id in order:
         order.remove(session_id)
-        save_tab_order(order)
+        data["order"] = order
+    data.get("folders", {}).pop(session_id, None)
+    _save_tabs_data(data)
     return order

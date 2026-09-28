@@ -34,7 +34,7 @@ def test_init_tabs_starts_a_fresh_single_tab_strip(monkeypatch, tmp_path):
     result = indicator._Api().init_tabs()
 
     assert result == {
-        "tabs": [{"session_id": "launch-id", "label": "New conversation", "current": True}],
+        "tabs": [{"session_id": "launch-id", "label": "New conversation", "current": True, "folder_name": None}],
         "transcript": [],
     }
 

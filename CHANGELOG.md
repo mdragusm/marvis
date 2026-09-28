@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-26
+
+- Marvis stopped working after Python was uninstalled/reinstalled (edge_tts failing with `ModuleNotFoundError: No module named 'xml'`). Root cause: `.venv` was built on `C:\Python314` (3.14.7), which was uninstalled (only a stray `Lib` folder remained); the new system Python is 3.13.15 at `%LOCALAPPDATA%\Programs\Python\Python313`. Renamed the dead venv to `.venv-py314-old`, recreated `.venv` on 3.13, reinstalled `requirements.txt` and the openWakeWord models. That surfaced a latent bug in `tts.py`: the `_lang_identifier` annotation was `langid.langid.LanguageIdentifier` though `langid` is already imported as `langid.langid` -- 3.14's lazy annotations never evaluated it, 3.13 evaluates it at import and crashes. Fixed to `langid.LanguageIdentifier`.
+- Reported directly ("how do I do a line break in text mode" -- Shift+Enter just sent the message). Root cause: the overlay's text-mode input was a single-line `<input type="text">` in `indicator_assets/overlay.html`, so a line break was physically impossible and Enter always submitted. Swapped it for an auto-growing `<textarea rows="1">` (font/line-height inherited, `resize: none`, `max-height: 40vh` with scroll). Enter now sends, Shift+Enter inserts a line break; added an `input` handler that grows the box to fit content and resets on send. Since the Python-side reads (`.value`/`.disabled`/`.placeholder` in `indicator.py`'s `send_text` path and the mode toggle) are identical for a textarea, no Python changes were needed.
+
 ## 2026-09-25
 
 - Reported directly ("if I'm talking to you and you're still generating your response and I switch over to the other tab, you still keep saying it, but if I go back to the original tab ... your response is not there anymore"). Root cause and two related bugs all sharing the same pattern -- code re-reading `get_session_id()` (a module-level global mutated by tab switches) at the END of an operation instead of capturing it at the START:

@@ -24,7 +24,7 @@ from .error_log import debug_logger
 # itself -- callers that need it (_resolve_edge_voice, wait_until_ready) block on
 # _lang_identifier_ready, which lets this overlap with stt's model load instead of
 # running after it.
-_lang_identifier: langid.langid.LanguageIdentifier | None = None
+_lang_identifier: langid.LanguageIdentifier | None = None
 _lang_identifier_ready = threading.Event()
 
 

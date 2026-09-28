@@ -101,9 +101,20 @@ else:
     _session_id = str(uuid.uuid4())
     _session_started = False
 
+_session_cwd: str = config.projects_base_dir
+
 
 def get_session_id() -> str:
     return _session_id
+
+
+def get_session_cwd() -> str:
+    return _session_cwd
+
+
+def set_session_cwd(path: str) -> None:
+    global _session_cwd
+    _session_cwd = path
 
 # Yielded in place of a text chunk the instant a tool call starts, so the caller can speak
 # whatever's been generated so far instead of waiting for a full sentence -- a tool call can
@@ -196,17 +207,20 @@ def generate_title(text: str) -> str | None:
 
 def reset_session() -> None:
     """Discard all prior conversation context; the next ask() call starts a brand-new claude session."""
-    global _session_id, _session_started
+    global _session_id, _session_started, _session_cwd
     _session_id = str(uuid.uuid4())
     _session_started = False
+    _session_cwd = config.projects_base_dir
     history.save_current_session(_session_id, started=False)
 
 
 def switch_session(session_id: str) -> None:
     """Make a previously saved session the active one, so the next ask() resumes its context."""
-    global _session_id, _session_started
+    global _session_id, _session_started, _session_cwd
     _session_id = session_id
     _session_started = True
+    folder = history.get_tab_folder(session_id)
+    _session_cwd = folder if folder else config.projects_base_dir
     history.save_current_session(session_id, started=True)
 
 
@@ -219,6 +233,7 @@ def ask(text: str) -> Iterator[str]:
     # the writebacks below guard on invoked_session_id to avoid clobbering the new tab.
     invoked_session_id = _session_id
     invoked_started = _session_started
+    invoked_cwd = _session_cwd
     creating_session = not invoked_started
     model, effort = _classify_tier(text)
     print(f"[marvis] tier -> {model} (effort={effort})", flush=True)
@@ -237,6 +252,7 @@ def ask(text: str) -> Iterator[str]:
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8",
+            cwd=invoked_cwd,
             # Without this, Windows pops up a visible console for the child because
             # main.py itself runs under pythonw.exe with no console of its own to attach to.
             creationflags=subprocess.CREATE_NO_WINDOW,

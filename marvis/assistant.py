@@ -10,7 +10,8 @@ from . import history, indicator
 from .audio import ptt_down, record_until_silence, record_while_key_held
 from .config import Mode, config
 from .error_log import logger as error_logger
-from .llm import FLUSH_SIGNAL, ask, generate_title, get_session_id, reset_session
+from . import projects as _projects
+from .llm import FLUSH_SIGNAL, ask, generate_title, get_session_id, reset_session, set_session_cwd
 from .stt import transcribe
 from .stt import wait_until_ready as stt_wait_until_ready
 from .tts import PreparedSpeech, begin_utterance, end_utterance, interrupt_event, play, prepare
@@ -45,6 +46,19 @@ _CLEAR_PHRASES = {
 def _is_clear_command(text: str) -> bool:
     normalized = text.strip().strip(".!?").lower()
     return normalized in _CLEAR_PHRASES
+
+
+_PROJECT_SWITCH_RE = re.compile(
+    r"^(?:open|switch(?: to)?|go to|load|jump to|new tab for|open up)"
+    r"(?:\s+the)?\s+(.+?)(?:\s+project)?[.!?]?$",
+    re.I,
+)
+
+
+def _parse_project_name(text: str) -> str | None:
+    m = _PROJECT_SWITCH_RE.match(text.strip())
+    return m.group(1).strip() if m else None
+
 
 # faster-whisper hallucinates these exact stock phrases when it transcribes near-silent or
 # noise-only audio -- e.g. a wake-word false trigger on fan hum, or trailing room noise
@@ -147,6 +161,26 @@ def toggle_mode() -> None:
     indicator.set_mode(_mode.value)
 
 
+def _handle_project_switch(spoken_name: str, original_session_id: str) -> str:
+    """Finds the project, opens a new tab bound to it, returns the reply to speak."""
+    matches = _projects.match_project(spoken_name)
+    if not matches:
+        return f"I couldn't find a project matching '{spoken_name}'."
+    if len(matches) > 1:
+        names = ", ".join(m.name for m in matches[:3])
+        suffix = " and others" if len(matches) > 3 else ""
+        return f"I found a few matches: {names}{suffix}. Which one did you mean?"
+
+    folder = matches[0]
+    reset_session()
+    new_session_id = get_session_id()
+    set_session_cwd(str(folder))
+    history.add_tab(new_session_id, after=original_session_id)
+    history.set_tab_folder(new_session_id, str(folder))
+    indicator.refresh_tabs(new_session_id)
+    return f"Opened a new tab for {folder.name}."
+
+
 def _generate_and_apply_title(session_id: str, text: str) -> None:
     title = generate_title(text)
     if title:
@@ -213,6 +247,20 @@ def _run_turn(mode: Mode) -> None:
         # so this correctly targets the brand-new session (not the cleared one).
         history.append_message(get_session_id(), "marvis", "Starting fresh.")
         play(prepare("Starting fresh."))
+        end_utterance()
+        indicator.hide()
+        print()
+        return
+
+    project_name = _parse_project_name(text)
+    if project_name is not None:
+        reply = _handle_project_switch(project_name, session_id)
+        interrupt_event.clear()
+        begin_utterance()
+        indicator.start_marvis_message()
+        indicator.append_marvis_message(reply)
+        history.append_message(session_id, "marvis", reply)
+        play(prepare(reply))
         end_utterance()
         indicator.hide()
         print()

@@ -183,6 +183,18 @@ def set_tab_label(session_id: str, label: str) -> None:
     _commands.put(("tab_label", session_id, label))
 
 
+def set_tab_folder_label(session_id: str, folder_name: str) -> None:
+    _commands.put(("tab_folder", session_id, folder_name))
+
+
+def refresh_tabs(session_id: str) -> None:
+    """Push updated tab strip + transcript to the overlay after a Python-side tab change."""
+    from marvis import history
+    tabs = history.get_tabs(session_id)
+    transcript = history.load_transcript(session_id)
+    _commands.put(("tab_state", tabs, transcript))
+
+
 _TEXT_INPUT_POLL_TIMEOUT = 0.1
 
 
@@ -229,6 +241,11 @@ def _poll_commands() -> None:
                 _window.evaluate_js(f"marvisOverlay.appendMarvisMessage({json.dumps(rest[0])})")
             elif cmd == "tab_label":
                 _window.evaluate_js(f"marvisOverlay.setTabLabel({json.dumps(rest[0])}, {json.dumps(rest[1])})")
+            elif cmd == "tab_folder":
+                _window.evaluate_js(f"marvisOverlay.setTabFolderLabel({json.dumps(rest[0])}, {json.dumps(rest[1])})")
+            elif cmd == "tab_state":
+                payload = json.dumps({"tabs": rest[0], "transcript": rest[1]})
+                _window.evaluate_js(f"marvisOverlay.applyTabState({payload})")
         except Exception:
             pass  # the window may be mid-teardown
 

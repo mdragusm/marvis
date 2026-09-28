@@ -26,7 +26,9 @@
   }
   .tab:hover { background: #232a37; }
   .tab.active { background: #232a37; color: #cfd8e3; border-color: #4da3ff; }
-  .tabLabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tabLabelWrap { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: 1px; }
+  .tabLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tabSubtitle { font-size: 10px; color: #4b5568; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tabClose {
     flex: 0 0 auto; width: 16px; height: 16px; border-radius: 3px;
     display: flex; align-items: center; justify-content: center;
@@ -81,6 +83,8 @@
     width: 100%; box-sizing: border-box; background: #1c212b; color: #cfd8e3;
     border: 1px solid #2c3240; border-radius: 4px;
     padding: clamp(7px, 0.7vw, 14px) clamp(9px, 0.9vw, 16px); font-size: clamp(13px, 1.1vw, 17px);
+    font-family: inherit; line-height: 1.4; resize: none; overflow-y: auto;
+    max-height: 40vh;
   }
   #textInput:disabled { opacity: 0.45; }
   #textInput::placeholder { color: #6b7686; }
@@ -140,7 +144,7 @@
 <div id="tabStrip"></div>
 <div id="chat"></div>
 <div id="inputRow">
-  <input id="textInput" type="text" placeholder="Switch to Text mode to type..." disabled>
+  <textarea id="textInput" rows="1" placeholder="Switch to Text mode to type..." disabled></textarea>
 </div>
 </div>
 <script>
@@ -296,6 +300,19 @@ window.marvisOverlay = {
     const tabEl = tabStripEl.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
     if (tabEl) tabEl.querySelector('.tabLabel').textContent = label;
   },
+  setTabFolderLabel(sessionId, folderName) {
+    const tabEl = tabStripEl.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
+    if (!tabEl) return;
+    const wrap = tabEl.querySelector('.tabLabelWrap');
+    let sub = wrap.querySelector('.tabSubtitle');
+    if (!sub) {
+      sub = document.createElement('div');
+      sub.className = 'tabSubtitle';
+      wrap.appendChild(sub);
+    }
+    sub.textContent = folderName;
+  },
+  applyTabState(state) { applyTabState(state); },
 };
 
 document.getElementById('restartBtn').addEventListener('click', () => {
@@ -312,9 +329,18 @@ function renderTabs(tabs) {
     const el = document.createElement('div');
     el.className = 'tab' + (t.current ? ' active' : '');
     el.dataset.sessionId = t.session_id;
+    const wrapEl = document.createElement('div');
+    wrapEl.className = 'tabLabelWrap';
     const labelEl = document.createElement('div');
     labelEl.className = 'tabLabel';
     labelEl.textContent = t.label;
+    wrapEl.appendChild(labelEl);
+    if (t.folder_name) {
+      const subEl = document.createElement('div');
+      subEl.className = 'tabSubtitle';
+      subEl.textContent = t.folder_name;
+      wrapEl.appendChild(subEl);
+    }
     const closeEl = document.createElement('div');
     closeEl.className = 'tabClose';
     closeEl.textContent = '×';
@@ -322,7 +348,7 @@ function renderTabs(tabs) {
       e.stopPropagation();
       window.pywebview.api.close_tab(t.session_id).then(applyTabState);
     });
-    el.appendChild(labelEl);
+    el.appendChild(wrapEl);
     el.appendChild(closeEl);
     el.addEventListener('click', () => {
       if (t.current) return;
@@ -412,10 +438,20 @@ function renderHistoryList(sessions) {
 document.getElementById('historyBtn').addEventListener('click', () => {
   window.pywebview.api.get_sessions().then(renderHistoryList);
 });
+function autoGrowInput() {
+  textInput.style.height = 'auto';
+  textInput.style.height = textInput.scrollHeight + 'px';
+}
+textInput.addEventListener('input', autoGrowInput);
 textInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !textInput.disabled && textInput.value.trim()) {
-    window.pywebview.api.send_text(textInput.value.trim());
-    textInput.value = '';
+  // Enter sends; Shift+Enter inserts a line break (the textarea's default).
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!textInput.disabled && textInput.value.trim()) {
+      window.pywebview.api.send_text(textInput.value.trim());
+      textInput.value = '';
+      autoGrowInput();
+    }
   }
 });
 
