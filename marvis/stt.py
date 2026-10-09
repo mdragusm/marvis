@@ -24,7 +24,10 @@ def wait_until_ready() -> None:
     _model_ready.wait()
 
 
+_INITIAL_PROMPT = "Claude, Marvis, Gerson."
+
+
 def transcribe(audio: np.ndarray) -> str:
     _model_ready.wait()
-    segments, _ = _model.transcribe(audio)
+    segments, _ = _model.transcribe(audio, initial_prompt=_INITIAL_PROMPT)
     return " ".join(segment.text.strip() for segment in segments)
