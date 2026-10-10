@@ -45,6 +45,13 @@ def wait_until_ready() -> None:
 
 _CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
+# A markdown link [text](url): speak only the visible text, never the word "link" and never
+# the URL itself. The url inside is discarded here; any bare URL left over is handled below.
+_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+# A bare URL that isn't wrapped in link syntax -- reading it out character by character is
+# useless, so it collapses to the single spoken word "link" (e.g. "it's at https://x" ->
+# "it's at link"). Matches Marcelo's standing rule to never read a raw URL aloud.
+_BARE_URL = re.compile(r"(?:https?://|www\.)\S+")
 _MARKDOWN_EMPHASIS = re.compile(r"[*_]{1,3}")
 # Horizontal rules (--- / *** / ___) that arrive as isolated "sentences" after the
 # newline splitter in assistant.py -- no spoken equivalent, just strip them entirely.
@@ -92,6 +99,12 @@ def _strip_markdown(text: str) -> str:
     text = _CODE_FENCE.sub(" ", text)
     text = _INLINE_CODE.sub(r"\1", text)
     text = text.replace("`", " ")
+    # Links before emphasis: reduce [text](url) to its text, then any remaining bare URL to the
+    # word "link". Order matters -- doing links first means an autolink like [https://x](https://x),
+    # whose text is itself a URL, still collapses to "link" on the bare-URL pass rather than being
+    # spelled out.
+    text = _MARKDOWN_LINK.sub(r"\1", text)
+    text = _BARE_URL.sub("link", text)
     text = _HORIZONTAL_RULE.sub(" ", text)
     # Table cell delimiters: a content row ("| help | List all commands |") reads cleanly as
     # the words alone, and a separator row ("|---|---|") drops to dashes that the speakable

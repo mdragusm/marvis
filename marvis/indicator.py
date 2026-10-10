@@ -45,6 +45,13 @@ class _Api:
     def send_text(self, text: str) -> None:
         _text_input.put(text)
 
+    def open_url(self, url: str) -> None:
+        # Opens a chat link in the system default browser rather than inside the overlay.
+        # Guarded to http(s) so a crafted link can't hand os.startfile a local path or an
+        # arbitrary scheme to launch; the renderer only emits http(s) anchors anyway.
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            os.startfile(url)
+
     def get_sessions(self) -> list:
         from marvis import history
 

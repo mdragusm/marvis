@@ -1,11 +1,10 @@
+# Architecture
+
+* Before changing how Marvis behaves, read `ARCHITECTURE.md` (repo root) — it maps each module and has a "change X → go here" index, so you don't re-read the whole codebase. Keep it current when a module's responsibility changes.
+
 # Text formatting
 
 * Use straight quotes/apostrophes ('  ") not smart/curly ones - curly ones get mangled into garbled characters when displayed in Marcelo's PowerShell console.
-
-# WhatsApp
-
-* WhatsApp is handled directly via the `whatsup` MCP plugin (no more OpenClaw delegation) — sending, reading, and replying all happen in this session.
-* Outward-facing actions (sending a message to someone) still need Marcelo's spoken confirmation first, per the system prompt. Reading, listing, and checking things do not.
 
 # Speaking file names aloud
 

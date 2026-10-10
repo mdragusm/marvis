@@ -214,13 +214,31 @@ function scrollChatToBottom() {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
+// Chat links open in the system browser, not inside the overlay: let the default <a href>
+// navigation fire inside this window and it replaces the overlay's own page. Delegated on #chat
+// so it covers both streaming replies and re-rendered transcripts without per-link wiring.
+chatEl.addEventListener('click', (e) => {
+  const link = e.target.closest('a.chatLink');
+  if (!link) return;
+  e.preventDefault();
+  if (window.pywebview && window.pywebview.api) window.pywebview.api.open_url(link.href);
+});
+
 function escapeHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// Renders **bold** markers as real bold instead of showing the literal asterisks.
+// Renders markdown markup as real HTML: [text](url) as a clickable link (handled first so a
+// URL's own asterisks can't be mistaken for bold), then **bold** markers as real bold instead
+// of showing the literal asterisks. Links are restricted to http(s) and open in the system
+// browser via the delegated handler on #chat (an <a href> would otherwise navigate the overlay
+// away from its own page).
 function renderMarkup(raw) {
-  return escapeHtml(raw).replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+  return escapeHtml(raw)
+    .replace(/\[([^\]]+?)\]\((https?:\/\/[^)\s]+?)\)/g,
+             '<a href="$2" class="chatLink">$1</a>')
+    .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
 }
 
 function updateStatus() {
