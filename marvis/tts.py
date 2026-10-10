@@ -50,6 +50,9 @@ _MARKDOWN_EMPHASIS = re.compile(r"[*_]{1,3}")
 # newline splitter in assistant.py -- no spoken equivalent, just strip them entirely.
 _HORIZONTAL_RULE = re.compile(r"^[-*_]{3,}\s*$", re.MULTILINE)
 _WHITESPACE = re.compile(r"\s{2,}")
+# Any letter or digit (Unicode-aware, so accented Spanish text counts; underscore excluded).
+# A stripped sentence with none of these has nothing to say -- see prepare()'s guard.
+_SPEAKABLE = re.compile(r"[^\W_]")
 
 _PRONUNCIATIONS_FILE = pathlib.Path(__file__).parent.parent / "pronunciations.toml"
 _pronunciations: dict[str, tuple[re.Pattern, str]] = {}
@@ -90,6 +93,10 @@ def _strip_markdown(text: str) -> str:
     text = _INLINE_CODE.sub(r"\1", text)
     text = text.replace("`", " ")
     text = _HORIZONTAL_RULE.sub(" ", text)
+    # Table cell delimiters: a content row ("| help | List all commands |") reads cleanly as
+    # the words alone, and a separator row ("|---|---|") drops to dashes that the speakable
+    # guard in prepare() then skips entirely.
+    text = text.replace("|", " ")
     return _WHITESPACE.sub(" ", _MARKDOWN_EMPHASIS.sub(" ", text)).strip()
 
 interrupt_event = threading.Event()
@@ -291,10 +298,12 @@ def prepare(text: str) -> PreparedSpeech:
     text is known, well before it's due to play, so the network/synthesis latency overlaps
     with whatever is currently playing instead of stalling playback."""
     stripped = _strip_markdown(text)
-    # A "sentence" that's pure markdown noise (e.g. a lone code-fence line, see
-    # _strip_markdown's comment) strips down to nothing -- skip the network call entirely
-    # rather than asking edge-tts to synthesize empty text.
-    if not stripped:
+    # A "sentence" with no speakable content -- a lone code-fence line, a markdown table
+    # separator like |---|---|, a rule of dashes -- must never reach edge-tts: it returns no
+    # audio and the fetch hangs indefinitely, which freezes the whole turn via the prepare-gate
+    # backpressure in assistant.py (confirmed live 2026-10-09: a reply with a markdown table
+    # stalled on its separator row and never resumed). Skip straight to silence instead.
+    if not _SPEAKABLE.search(stripped):
         return _empty_speech(text)
     return _prepare_edge(_apply_pronunciations(stripped))
 

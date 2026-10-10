@@ -37,10 +37,10 @@ class _Api:
         subprocess.Popen([str(pythonw), str(project_root / "main.py")], cwd=str(project_root))
         os._exit(0)
 
-    def toggle_mode(self) -> None:
-        from marvis.assistant import toggle_mode
+    def toggle_wake_word(self) -> None:
+        from marvis.assistant import toggle_wake_word
 
-        toggle_mode()
+        toggle_wake_word()
 
     def send_text(self, text: str) -> None:
         _text_input.put(text)
@@ -131,8 +131,8 @@ class _Api:
         return {"tabs": history.get_tabs(session_id), "transcript": history.load_transcript(session_id)}
 
 
-def set_mode(mode_label: str) -> None:
-    _commands.put(("mode", mode_label))
+def set_wake_word(enabled: bool) -> None:
+    _commands.put(("wake_word", enabled))
 
 
 def show() -> None:
@@ -231,8 +231,8 @@ def _poll_commands() -> None:
                 _window.evaluate_js(f"marvisOverlay.setUsage({json.dumps(rest[0])}, {json.dumps(rest[1])})")
             elif cmd == "levels":
                 _window.evaluate_js(f"marvisOverlay.setLevels({json.dumps(rest[0])})")
-            elif cmd == "mode":
-                _window.evaluate_js(f"marvisOverlay.setMode({json.dumps(rest[0])})")
+            elif cmd == "wake_word":
+                _window.evaluate_js(f"marvisOverlay.setWakeWord({json.dumps(rest[0])})")
             elif cmd == "user_msg":
                 _window.evaluate_js(f"marvisOverlay.addUserMessage({json.dumps(rest[0])})")
             elif cmd == "marvis_start":

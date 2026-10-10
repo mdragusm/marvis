@@ -30,9 +30,9 @@ def _get_model():
 def wait_for_wake_word(
     threshold: float = config.wake_threshold,
     noise_floor: float = config.wake_noise_floor,
-    mode_check=None,
+    enabled_check=None,
 ) -> bool:
-    """Block until the wake word is heard. Returns False early if mode_check() turns falsy."""
+    """Block until the wake word is heard. Returns False early if enabled_check() turns falsy."""
     # openWakeWord's confidence score peaks a frame or two after the loudest part of the
     # phrase (its own internal buffering), so requiring both the noise-floor and confidence
     # checks to pass on the exact same frame missed real, high-confidence detections --
@@ -45,7 +45,7 @@ def wait_for_wake_word(
     recent_amplitudes: "deque[float]" = deque(maxlen=_RECENT_AMPLITUDE_WINDOW)
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=CHUNK) as stream:
         while True:
-            if mode_check is not None and not mode_check():
+            if enabled_check is not None and not enabled_check():
                 return False
             chunk, _ = stream.read(CHUNK)
             flat = chunk.flatten()

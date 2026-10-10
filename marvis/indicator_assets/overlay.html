@@ -86,7 +86,7 @@
     font-family: inherit; line-height: 1.4; resize: none; overflow-y: auto;
     max-height: 40vh;
   }
-  #textInput:disabled { opacity: 0.45; }
+  #wakeWordBtn.active { background: #1a2e1a; border-color: #4caf50; color: #4caf50; }
   #textInput::placeholder { color: #6b7686; }
   .msg {
     max-width: 82%; padding: clamp(6px, 0.6vw, 12px) clamp(10px, 1vw, 18px); border-radius: 10px;
@@ -128,7 +128,7 @@
 </head>
 <body>
 <div id="bar">
-  <button id="modeBtn">Mode: ...</button>
+  <button id="wakeWordBtn" title="Toggle wake word detection">Wake Word: Off</button>
   <button id="historyBtn">History</button>
   <button id="restartBtn">Restart</button>
 </div>
@@ -144,7 +144,7 @@
 <div id="tabStrip"></div>
 <div id="chat"></div>
 <div id="inputRow">
-  <textarea id="textInput" rows="1" placeholder="Switch to Text mode to type..." disabled></textarea>
+  <textarea id="textInput" rows="1" placeholder="Type a message..."></textarea>
 </div>
 </div>
 <script>
@@ -261,15 +261,10 @@ window.marvisOverlay = {
       targetLevels[i] = Math.max(0, Math.min(1, levels[i]));
     }
   },
-  setMode(label) {
-    const spoken = label
-      .split('_')
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(' ');
-    document.getElementById('modeBtn').textContent = `Mode: ${spoken}`;
-    const isText = label === 'text';
-    textInput.disabled = !isText;
-    textInput.placeholder = isText ? 'Type a message...' : 'Switch to Text mode to type...';
+  setWakeWord(enabled) {
+    const btn = document.getElementById('wakeWordBtn');
+    btn.textContent = `Wake Word: ${enabled ? 'On' : 'Off'}`;
+    btn.classList.toggle('active', enabled);
   },
   addUserMessage(text) {
     const el = document.createElement('div');
@@ -318,8 +313,8 @@ window.marvisOverlay = {
 document.getElementById('restartBtn').addEventListener('click', () => {
   window.pywebview.api.restart();
 });
-document.getElementById('modeBtn').addEventListener('click', () => {
-  window.pywebview.api.toggle_mode();
+document.getElementById('wakeWordBtn').addEventListener('click', () => {
+  window.pywebview.api.toggle_wake_word();
 });
 const tabStripEl = document.getElementById('tabStrip');
 
@@ -447,7 +442,7 @@ textInput.addEventListener('keydown', (e) => {
   // Enter sends; Shift+Enter inserts a line break (the textarea's default).
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (!textInput.disabled && textInput.value.trim()) {
+    if (textInput.value.trim()) {
       window.pywebview.api.send_text(textInput.value.trim());
       textInput.value = '';
       autoGrowInput();

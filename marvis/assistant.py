@@ -8,7 +8,7 @@ import keyboard
 
 from . import history, indicator
 from .audio import ptt_down, record_until_silence, record_while_key_held
-from .config import Mode, config
+from .config import config
 from .error_log import logger as error_logger
 from . import projects as _projects
 from .llm import FLUSH_SIGNAL, ask, generate_title, get_session_id, reset_session, set_session_cwd
@@ -18,10 +18,17 @@ from .tts import PreparedSpeech, begin_utterance, end_utterance, interrupt_event
 from .tts import wait_until_ready as tts_wait_until_ready
 from .wakeword import wait_for_wake_word
 
-_mode = Mode.PUSH_TO_TALK
-_lock = threading.Lock()
+# Wake word is off by default; PTT and text are always on.
+_wake_word_enabled = False
+_ww_lock = threading.Lock()
 
-_MODE_CYCLE = [Mode.PUSH_TO_TALK, Mode.WAKE_WORD, Mode.TEXT]
+# True while the main loop is actively running a turn (recording, thinking, speaking).
+# The wake-word producer checks this so it won't try to start a second overlapping turn.
+_busy = threading.Event()
+
+# All three input producers feed turns here as (source, text) tuples.
+# source is "ptt", "text", or "wake_word" -- used only for hallucination filtering.
+_turn_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
 
 _SENTENCE_BOUNDARY = re.compile(r"[.!?]+\s+|\n+")
 # A run of 2+ dots (an ellipsis, "…" already normalized to "..." by llm.py's sanitizer) is
@@ -147,18 +154,18 @@ def _speech_worker(prepared_queue: "queue.Queue[PreparedSpeech | None]") -> None
             _prepare_gate.release()
 
 
-def get_mode() -> Mode:
-    with _lock:
-        return _mode
+def is_wake_word_enabled() -> bool:
+    with _ww_lock:
+        return _wake_word_enabled
 
 
-def toggle_mode() -> None:
-    global _mode
-    with _lock:
-        next_index = (_MODE_CYCLE.index(_mode) + 1) % len(_MODE_CYCLE)
-        _mode = _MODE_CYCLE[next_index]
-        print(f"[marvis] mode -> {_mode.value}")
-    indicator.set_mode(_mode.value)
+def toggle_wake_word() -> None:
+    global _wake_word_enabled
+    with _ww_lock:
+        _wake_word_enabled = not _wake_word_enabled
+        enabled = _wake_word_enabled
+    print(f"[marvis] wake word -> {'on' if enabled else 'off'}")
+    indicator.set_wake_word(enabled)
 
 
 def _handle_project_switch(spoken_name: str, original_session_id: str) -> str:
@@ -188,47 +195,70 @@ def _generate_and_apply_title(session_id: str, text: str) -> None:
         indicator.set_tab_label(session_id, title)
 
 
-def _run_turn(mode: Mode) -> None:
-    if mode == Mode.PUSH_TO_TALK:
+def _ptt_producer() -> None:
+    """Runs forever. On each PTT press: records, transcribes, enqueues the turn.
+    PTT always works regardless of busy state -- pressing the key also interrupts
+    any in-progress reply (handled by _on_push_to_talk), so the queue slot will
+    drain quickly and the new turn will start right after."""
+    while True:
+        # Wait for the key to go down.
         while not ptt_down.is_set():
-            if get_mode() != mode:
-                break
-            time.sleep(0.05)
-        else:
-            indicator.start_listening()
-            audio = record_while_key_held()
-            indicator.stop_listening()
-        if get_mode() != mode:
-            return
-
+            time.sleep(0.02)
+        indicator.start_listening()
+        audio = record_while_key_held()
+        indicator.stop_listening()
         if audio.size == 0:
-            return
+            continue
         text = transcribe(audio)
-    elif mode == Mode.WAKE_WORD:
-        if not wait_for_wake_word(mode_check=lambda: get_mode() == mode):
-            return
-        # Confirms the wake word landed before the user starts talking -- otherwise there's
-        # no visible sign the trigger was heard at all versus missed.
+        if not text.strip():
+            continue
+        if _is_likely_hallucination(text):
+            continue
+        print(f"[you/ptt] {text}")
+        _turn_queue.put(("ptt", text))
+
+
+def _text_producer() -> None:
+    """Runs forever. Waits for text submitted via the overlay and enqueues it."""
+    while True:
+        text = indicator.get_text_input()
+        if text and text.strip():
+            _turn_queue.put(("text", text))
+
+
+def _wake_word_producer() -> None:
+    """Runs forever. When wake word is enabled AND Marvis is not busy, listens
+    for the trigger phrase, records the command, and enqueues the turn."""
+    while True:
+        # Wait until wake word is turned on.
+        while not is_wake_word_enabled():
+            time.sleep(0.1)
+        # Don't start a new turn while one is in progress (pause during busy).
+        if _busy.is_set():
+            time.sleep(0.1)
+            continue
+        # Block until triggered; abort if disabled or busy while waiting.
+        triggered = wait_for_wake_word(
+            enabled_check=lambda: is_wake_word_enabled() and not _busy.is_set()
+        )
+        if not triggered:
+            continue
+        # Don't start recording if something snuck in while we waited.
+        if _busy.is_set():
+            continue
         indicator.start_listening()
         audio = record_until_silence()
         indicator.stop_listening()
-
         if audio.size == 0:
-            return
+            continue
         text = transcribe(audio)
-    else:
-        text = indicator.get_text_input(mode_check=lambda: get_mode() == mode)
-        if text is None:
-            return
+        if not text.strip() or _is_likely_hallucination(text):
+            continue
+        print(f"[you/wake] {text}")
+        _turn_queue.put(("wake_word", text))
 
-    if not text.strip():
-        return
 
-    if mode != Mode.TEXT and _is_likely_hallucination(text):
-        return
-
-    if mode != Mode.TEXT:
-        print(f"[you] {text}")
+def _run_turn(source: str, text: str) -> None:
     indicator.add_user_message(text)
     session_id = get_session_id()
     history.append_message(session_id, "user", text)
@@ -402,27 +432,29 @@ def run() -> None:
     global _ptt_hook
     # Both loaded their heavy models in background threads starting at import time,
     # in parallel with each other -- waiting on both here costs roughly the slower of
-    # the two instead of their sum, and keeps the mode label from showing "ready"
+    # the two instead of their sum, and keeps the indicator from showing "ready"
     # before speech-to-text/text-to-speech actually are.
     stt_wait_until_ready()
     tts_wait_until_ready()
-    indicator.set_mode(get_mode().value)
-    keyboard.add_hotkey(config.mode_toggle_key, toggle_mode)
+    indicator.set_wake_word(is_wake_word_enabled())
 
     _ptt_hook = keyboard.hook_key(config.push_to_talk_key, _on_push_to_talk, suppress=True)
     threading.Thread(target=_rehook_watchdog, daemon=True).start()
 
-    print(
-        f"[marvis] mode -> {get_mode().value} "
-        f"({config.push_to_talk_key}=talk/interrupt, {config.mode_toggle_key}=switch mode)"
-    )
+    # Start the three input producers.
+    threading.Thread(target=_ptt_producer, daemon=True).start()
+    threading.Thread(target=_text_producer, daemon=True).start()
+    threading.Thread(target=_wake_word_producer, daemon=True).start()
+
+    print(f"[marvis] ready ({config.push_to_talk_key}=talk/interrupt, wake word={'on' if is_wake_word_enabled() else 'off'})")
 
     while True:
-        mode = get_mode()
+        source, text = _turn_queue.get()
         # Capture now, before _run_turn (or any tab switch it triggers) can change it.
         turn_session_id = get_session_id()
+        _busy.set()
         try:
-            _run_turn(mode)
+            _run_turn(source, text)
         except Exception:
             # pythonw has no console, so an uncaught exception here would kill Marvis
             # silently -- log it, hide the indicator, and speak/record a fallback message
@@ -434,6 +466,8 @@ def run() -> None:
             except Exception:
                 # Reporting the failure must not itself become an unreported failure.
                 error_logger.error("failed to report turn failure:\n%s", traceback.format_exc())
+        finally:
+            _busy.clear()
 
 
 if __name__ == "__main__":
